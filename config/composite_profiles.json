@@ -1,0 +1,56 @@
+{
+  "tiers": [
+    {
+      "name": "universal",
+      "decode_tps_ref": 45.0,
+      "ttft_s_ref": 0.5,
+      "basis": "observed universal benchmark reference standard across all hardware."
+    }
+  ],
+  "profiles": {
+    "quality_focused": {
+      "weights": {
+        "quality": 0.6,
+        "speed": 0.25,
+        "fit": 0.15
+      },
+      "bucket_weights": {
+        "comprehension": 0.0,
+        "extraction": 1.0,
+        "numeric_reasoning": 1.0,
+        "policy_decision": 1.0
+      },
+      "speed_weights": {
+        "decode_tps": 0.7,
+        "ttft": 0.3
+      },
+      "fit": {
+        "min_ok": 0.5,
+        "max_ok": 0.8,
+        "idle_score": 0.5
+      }
+    },
+    "latency_sensitive": {
+      "weights": {
+        "quality": 0.25,
+        "speed": 0.6,
+        "fit": 0.15
+      },
+      "bucket_weights": {
+        "comprehension": 0.0,
+        "extraction": 1.0,
+        "numeric_reasoning": 1.0,
+        "policy_decision": 1.0
+      },
+      "speed_weights": {
+        "decode_tps": 0.5,
+        "ttft": 0.5
+      },
+      "fit": {
+        "min_ok": 0.5,
+        "max_ok": 0.8,
+        "idle_score": 0.5
+      }
+    }
+  }
+}

@@ -1,0 +1,39 @@
+# Production compose — backend only.
+# DB and dashboard are hosted separately.
+# Runners execute inference engines locally and POST results here.
+#
+# Usage:
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Required .env vars on the VM:
+#   DATABASE_URL  — pooled PostgreSQL application URL
+#   ALLOWED_ORIGINS — allowed dashboard origins
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: sh -c "uvicorn backend.app.main:app --host 0.0.0.0 --port 8000"
+    ports:
+      - "0.0.0.0:8000:8000"
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in the remote .env}
+      # ALLOWED_ORIGINS is the exact var name read by backend/app/core/config.py.
+      # A comma-separated list is supported: "https://a.vercel.app,https://b.vercel.app"
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?Set ALLOWED_ORIGINS in the remote .env}
+      EXPERIMENT_TAG: ${EXPERIMENT_TAG:-}
+      GIT_REVISION: ${GIT_REVISION:-}
+      RESULTS_DIR: /app/data/results
+    volumes:
+      - benchmark_results:/app/data/results
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/api/v1/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 60s
+
+volumes:
+  benchmark_results:

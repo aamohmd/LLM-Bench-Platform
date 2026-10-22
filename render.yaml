@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: llm-bench-platform-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: free
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: EXPERIMENT_TAG
+        sync: false
+      - key: GIT_REVISION
+        sync: false
