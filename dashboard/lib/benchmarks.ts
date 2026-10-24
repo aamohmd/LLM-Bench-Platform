@@ -207,12 +207,16 @@ export function measuredConcurrencies(runs: Pick<BenchmarkRun, "concurrency">[])
     .sort((a, b) => a - b);
 }
 
-/** Presentation group only; exact configuration identities still isolate scoring. */
-export function scorecardGroupKey(run: BenchmarkRun): string {
-  const runtime = Object.entries(run.engine_config ?? {})
+export function scorecardRuntimeSettings(run: BenchmarkRun) {
+  return Object.entries(run.engine_config ?? {})
     .filter(([key]) => !/(prompt|strategy|directive)/.test(key)
       && !["requested_min_context", "quality_aggregation", "automated_grading_sha256"].includes(key))
     .sort(([a], [b]) => a.localeCompare(b));
+}
+
+/** Presentation group only; exact configuration identities still isolate scoring. */
+export function scorecardGroupKey(run: BenchmarkRun): string {
+  const runtime = scorecardRuntimeSettings(run);
   return JSON.stringify([
     run.model, run.framework, hardwareLabel(run), run.hw_gpu_count,
     run.hw_gpu_memory_mb, run.model_revision, run.quantization, run.context_len, runtime,
@@ -622,7 +626,13 @@ export async function fetchRunDetailWithStatus(
   if (response === null) return null;
   if (response.status === 404) return { status: 404, data: null };
   if (!response.ok) return { status: response.status, data: null };
-  return { status: response.status, data: (await response.json()) as BenchmarkRunDetail };
+  try {
+    const data = await response.json();
+    if (!data || typeof data.model !== "string" || typeof data.id !== "string") return { status: 502, data: null };
+    return { status: response.status, data: data as BenchmarkRunDetail };
+  } catch {
+    return { status: 502, data: null };
+  }
 }
 
 export type BenchmarkSample = {
@@ -630,71 +640,6 @@ export type BenchmarkSample = {
   gpu_mem_mb?: number;
   kv_cache_pct?: number;
   itl_ms?: number;
-};
-
-export type RecipePromptConfig = {
-  system_template_id: string;
-  temperature: number;
-  response_format: "json_object" | "text" | string;
-  max_output_tokens: number;
-  system_prompt?: string | null;
-};
-
-export type RecipeRAGConfig = {
-  chunk_size: number;
-  chunk_overlap: number;
-  top_k: number;
-  use_reranker: boolean;
-  reranker_model?: string | null;
-  injection_format: "xml_tags" | "markdown_context" | "plain_text" | string;
-};
-
-export type RecipeInfraConfig = {
-  engine: "vllm" | "ollama" | string;
-  model: string;
-  quantization?: string | null;
-  max_context_len: number;
-  gpu_memory_utilization: number;
-  concurrency_limit: number;
-  tensor_parallel_size?: number;
-  kv_cache_dtype?: string | null;
-  enable_prefix_caching?: boolean;
-};
-
-export type RecipeSLAVerdict = {
-  is_golden: boolean;
-  fit_status: "Qualified" | "Near-Miss" | "Needs Evidence" | "Rejected" | string;
-  decode_tps: number;
-  median_ttft_s: number;
-  p95_ttft_s: number;
-  quality_score: number;
-  peak_vram_pct: number;
-  error_rate_pct?: number;
-  evaluation_summary?: string;
-};
-
-export type ProductionRecipe = {
-  id: string;
-  name: string;
-  workload: string;
-  workload_title: string;
-  description?: string;
-  prompt_config: RecipePromptConfig;
-  rag_config: RecipeRAGConfig;
-  infra_config: RecipeInfraConfig;
-  sla_verdict: RecipeSLAVerdict;
-  created_at?: string;
-};
-
-export type RecipeExportResponse = {
-  recipe_id: string;
-  recipe_name: string;
-  workload: string;
-  vllm_command: string;
-  docker_compose_yaml: string;
-  rag_config_py: string;
-  recipe_yaml: string;
-  sla_certificate: Record<string, any>;
 };
 
 export type PipelineConfig = {
@@ -793,17 +738,6 @@ export const fetchHistory = (limit: number = 200): Promise<BenchmarkRun[] | null
 export const fetchRunDetail = (id: string) => fetchJson<BenchmarkRunDetail>(`/api/v1/benchmark-history/${id}`, { cache: "no-store" });
 // Models reflect live inference-node state; proxy also forces no-store for v1/models.
 export const fetchCompositeProfiles = () => fetchJson<CompositeProfilesResponse>("/api/v1/composite-profiles", { next: { tags: ["benchmarks"] } });
-
-export const fetchRecipes = (workload?: string) => {
-  const qs = workload ? `?workload=${encodeURIComponent(workload)}` : "";
-  return fetchJson<ProductionRecipe[]>(`/api/v1/recipes${qs}`, { cache: "no-store" });
-};
-
-export const fetchRecipe = (id: string) =>
-  fetchJson<ProductionRecipe>(`/api/v1/recipes/${id}`, { cache: "no-store" });
-
-export const fetchRecipeExport = (id: string) =>
-  fetchJson<RecipeExportResponse>(`/api/v1/recipes/${id}/export`, { cache: "no-store" });
 
 /** Fetch benchmark rows for a specific model (optionally filtered by experiment tag prefix). */
 export const fetchBenchmarksByModel = async (model: string, tagPrefix?: string, limit: number = 500): Promise<BenchmarkRun[] | null> => {
@@ -956,25 +890,52 @@ export function numberOrZero(value: number | undefined) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+export function recordedRequestCount(run: BenchmarkRun): number | null {
+  if (run.quality_total_count != null) return run.quality_total_count;
+  const categories = Object.values(run.category_results ?? {});
+  if (categories.length && categories.every((result) => result.total_count != null)) {
+    return categories.reduce((sum, result) => sum + result.total_count!, 0);
+  }
+  if (run.quality_success_count != null && run.quality_failed_count != null) {
+    return run.quality_success_count + run.quality_failed_count;
+  }
+  return null;
+}
+
 export function errorRate(run: BenchmarkRun) {
-  const categoryAttempts = Object.values(run.category_results ?? {}).reduce((sum, result) => sum + (result.total_count ?? 0), 0);
-  const attempts =
-    run.quality_total_count ||
-    categoryAttempts ||
-    (run.quality_success_count != null && run.quality_failed_count != null
-      ? run.quality_success_count + run.quality_failed_count
-      : null) ||
-    run.runs_sampled ||
-    ((run.num_runs ?? 0) * (run.concurrency ?? 1));
-  return attempts && attempts > 0 ? (run.error_count ?? 0) / attempts : null;
+  const attempts = recordedRequestCount(run);
+  return attempts != null && attempts > 0 && run.error_count != null ? run.error_count / attempts : null;
 }
 
 export function generationTimeoutRate(run: BenchmarkRun) {
   if (run.generation_timeout_rate != null) return run.generation_timeout_rate;
-  const attempts = run.quality_total_count ?? run.num_runs;
-  return attempts && attempts > 0
-    ? (run.generation_timeout_count ?? 0) / attempts
-    : null;
+  const attempts = recordedRequestCount(run);
+  return attempts != null && attempts > 0 && run.generation_timeout_count != null
+    ? run.generation_timeout_count / attempts : null;
+}
+
+export function modelDeploymentKey(run: BenchmarkRun): string {
+  return JSON.stringify([run.model, (run.framework || "unknown").toLowerCase(), hardwareLabel(run).toLowerCase(), run.concurrency ?? 1]);
+}
+
+export function selectModelRunContext(runs: BenchmarkRun[], selection: { engine?: string; hardware?: string; concurrency?: number; runId?: string }) {
+  const ordered = newestFirst(runs);
+  const hardwareMatches = (run: BenchmarkRun, name?: string) => !name || [hardwareLabel(run), run.hw_gpu_name, run.hw_aws_instance_type]
+    .some((value) => value?.toLowerCase() === name.toLowerCase());
+  const anchor = selection.runId ? ordered.find((run) => run.id === selection.runId) : ordered.find((run) =>
+    (!selection.engine || (run.framework || "unknown").toLowerCase() === selection.engine.toLowerCase())
+    && hardwareMatches(run, selection.hardware)
+    && (selection.concurrency === undefined || (run.concurrency ?? 1) === selection.concurrency));
+  const targetEngine = selection.engine ?? anchor?.framework ?? "unknown";
+  const targetHardware = selection.hardware ?? (anchor ? hardwareLabel(anchor) : "");
+  const targetConcurrency = selection.concurrency ?? anchor?.concurrency ?? 1;
+  const sourceRuns = ordered.filter((run) => {
+    return (run.framework || "unknown").toLowerCase() === targetEngine.toLowerCase()
+      && hardwareMatches(run, targetHardware)
+      && (run.concurrency ?? 1) === targetConcurrency;
+  });
+  const latest = selection.runId ? sourceRuns.find((run) => run.id === selection.runId) : sourceRuns[0];
+  return { sourceRuns, latest, targetEngine, targetHardware, targetConcurrency };
 }
 
 export function hardwareLabel(run?: BenchmarkRun | null): string {
@@ -1045,7 +1006,7 @@ export function deploymentKey(run: BenchmarkRun) {
 
 export function formatMetric(value: number | undefined | null, unit: string) {
   const number = value != null ? Number(value) : NaN;
-  if (Number.isNaN(number) || number <= 0) return "—";
+  if (!Number.isFinite(number) || number < 0) return "—";
   return `${number.toFixed(number < 10 ? 2 : 1)} ${unit}`;
 }
 
@@ -1054,7 +1015,8 @@ export function runDate(run: BenchmarkRun) {
 }
 
 export function newestFirst(runs: BenchmarkRun[]) {
-  return [...runs].sort((left, right) => Date.parse(runDate(right)) - Date.parse(runDate(left)));
+  const dateValue = (run: BenchmarkRun) => { const value = Date.parse(runDate(run)); return Number.isFinite(value) ? value : -Infinity; };
+  return [...runs].sort((left, right) => dateValue(right) - dateValue(left));
 }
 
 export function getLatestRuns(runs: BenchmarkRun[]) {

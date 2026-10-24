@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
 
 export default function TuningPage() {
-  redirect("/#recipe-studio");
+  redirect("/#benchmark-runner");
 }

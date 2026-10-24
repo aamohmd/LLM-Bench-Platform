@@ -1,5 +1,7 @@
 "use client";
 
+import { apiErrorMessage } from "../../lib/apiErrors";
+
 import { FormEvent, useEffect, useId, useState } from "react";
 import {
   Award,
@@ -259,7 +261,7 @@ export function ScorecardCriteriaEditor({ onNotify }: { onNotify: (msg: string) 
         body: JSON.stringify({ ...activeForm, name }),
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "The SLA policy could not be saved.");
+      if (!response.ok) throw new Error(apiErrorMessage(data, "The SLA policy could not be saved."));
       setProfiles((current) => current.map((profile) => profile.id === data.id ? data : profile));
       setActiveForm(null);
       onNotify(`SLA policy '${name}' saved.`);
@@ -298,7 +300,7 @@ export function ScorecardCriteriaEditor({ onNotify }: { onNotify: (msg: string) 
         body: JSON.stringify(payload),
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "The SLA policy could not be created.");
+      if (!response.ok) throw new Error(apiErrorMessage(data, "The SLA policy could not be created."));
       setProfiles((current) => [...current, data]);
       setIsCreatingNew(false);
       setNewName("");
@@ -325,7 +327,7 @@ export function ScorecardCriteriaEditor({ onNotify }: { onNotify: (msg: string) 
         body: JSON.stringify({ criteria_id: criteriaId }),
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "The SLA assignment could not be saved.");
+      if (!response.ok) throw new Error(apiErrorMessage(data, "The SLA assignment could not be saved."));
       setSuites((current) => current.map((item) => item.id === suite.id ? { ...item, ...data } : item));
       const policyName = profiles.find((profile) => profile.id === criteriaId)?.name ?? criteriaId;
       onNotify(`${suite.name} now uses ${policyName}.`);
@@ -347,7 +349,7 @@ export function ScorecardCriteriaEditor({ onNotify }: { onNotify: (msg: string) 
         method: "DELETE",
       });
       const data = response.status === 204 ? null : await response.json();
-      if (!response.ok) throw new Error(data?.detail || "The SLA policy could not be deleted.");
+      if (!response.ok) throw new Error(apiErrorMessage(data, "The SLA policy could not be deleted."));
       setProfiles((current) => current.filter((profile) => profile.id !== activeForm.id));
       onNotify(`SLA policy '${activeForm.name}' deleted.`);
       setConfirmDelete(false);

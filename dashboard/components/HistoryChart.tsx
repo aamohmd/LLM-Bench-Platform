@@ -13,32 +13,31 @@ import { ParentSize } from "@visx/responsive";
 import { bisector, extent, max } from "d3-array";
 import { timeFormat } from "d3-time-format";
 
-function numeric(value: number | undefined) {
+function numeric(value: number | undefined | null) {
+  if (value == null) return undefined;
   const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : undefined;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
 }
 
-function format(value: number, unit: string) {
-  return value ? `${value.toFixed(value < 10 ? 2 : 1)} ${unit}` : "—";
+function format(value: number | undefined, unit: string) {
+  return value != null && Number.isFinite(value) ? `${value.toFixed(value < 10 ? 2 : 1)} ${unit}` : "—";
 }
 
-const formatDate = timeFormat("%b %d");
+const formatDate = timeFormat("%b %d %H:%M");
 
 type TooltipData = {
   run: BenchmarkRun;
-  metricLabel: string;
-  metricValue: string;
-  metricColor: string;
 };
 
-export function HistoryChart({ points }: { points: BenchmarkRun[] }) {
+export function HistoryChart({ points, connectPoints = true }: { points: BenchmarkRun[]; connectPoints?: boolean }) {
   const usable = useMemo(() => {
     return points
-      .filter((p) => (p.created_at ?? p.timestamp))
+      .filter((p) => Number.isFinite(Date.parse(p.created_at ?? p.timestamp ?? ""))
+        && [getDecode(p), getPrefill(p), getTTFT(p)].some((value) => value != null))
       .sort((a, b) => Date.parse(a.created_at ?? a.timestamp ?? "") - Date.parse(b.created_at ?? b.timestamp ?? ""));
   }, [points]);
 
-  if (usable.length < 3) {
+  if (usable.length === 0) {
     return (
       <div className="panel" style={{ border: "none", boxShadow: "none", background: "transparent" }}>
         <div className="panel-body" style={{ textAlign: "center", padding: "64px 24px" }}>
@@ -48,8 +47,8 @@ export function HistoryChart({ points }: { points: BenchmarkRun[] }) {
             <circle cx="22" cy="26" r="2" fill="var(--text-tertiary)" opacity="0.4"/>
             <circle cx="30" cy="10" r="2" fill="var(--text-tertiary)" opacity="0.4"/>
           </svg>
-          <h2 className="text-heading" style={{ marginBottom: "8px" }}>Not enough data</h2>
-          <p className="text-sub">Run this benchmark a few more times to see trends.</p>
+          <h2 className="text-heading" style={{ marginBottom: "8px" }}>No timing data</h2>
+          <p className="text-sub">No dated timing measurements are available in this view.</p>
         </div>
       </div>
     );
@@ -60,21 +59,24 @@ export function HistoryChart({ points }: { points: BenchmarkRun[] }) {
       <figcaption id="history-chart-caption" className="sr-only">
         Historical decode speed, prefill speed, and time to first token by benchmark date. A complete data table follows the chart.
       </figcaption>
+      {usable.length === 1 && <p className="text-sub-mono" role="status">One recorded observation. Another comparable run is needed to show change over time.</p>}
       <div style={{ width: "100%", height: "308px", overflow: "hidden", position: "relative", borderTop: "1px solid var(--border-subtle)" }}>
         <ParentSize>
-          {({ width, height }) => <VisxChart width={width} height={height} usable={usable} />}
+          {({ width, height }) => <VisxChart width={width} height={height} usable={usable} connectPoints={connectPoints} />}
         </ParentSize>
       </div>
       <table className="sr-only">
         <caption>Historical performance values</caption>
-        <thead><tr><th>Date</th><th>Decode speed</th><th>Prefill speed</th><th>Time to first token</th></tr></thead>
+        <thead><tr><th>Date</th><th>Benchmark</th><th>Concurrency</th><th>Decode speed</th><th>Prefill speed</th><th>Time to first token</th></tr></thead>
         <tbody>
           {usable.map((run, index) => (
             <tr key={`${getDate(run).valueOf()}-${index}`}>
               <td>{getDate(run).toLocaleString()}</td>
-              <td>{format(getDecode(run) ?? 0, "tok/s")}</td>
-              <td>{format(getPrefill(run) ?? 0, "tok/s")}</td>
-              <td>{format(getTTFT(run) ?? 0, "s")}</td>
+              <td>{run.prompt_category ?? "—"}</td>
+              <td>{run.concurrency ?? "—"}</td>
+              <td>{format(getDecode(run), "tok/s")}</td>
+              <td>{format(getPrefill(run), "tok/s")}</td>
+              <td>{format(getTTFT(run), "s")}</td>
             </tr>
           ))}
         </tbody>
@@ -87,25 +89,26 @@ const getDate = (d: BenchmarkRun) => new Date(d.created_at ?? d.timestamp ?? "")
 // Returns the decode TPS value, preferring per-request median over concurrent aggregate.
 // Callers that need to know which field was used should check d.median_decode_tps first.
 const getDecode = (d: BenchmarkRun) => numeric(d.median_decode_tps ?? d.aggregate_output_tps);
-const getDecodeSource = (d: BenchmarkRun) =>
-  d.median_decode_tps != null ? "median" : d.aggregate_output_tps != null ? "agg" : null;
 const getPrefill = (d: BenchmarkRun) => numeric(d.median_prefill_tps);
 const getTTFT = (d: BenchmarkRun) => numeric(d.median_ttft_s);
 const bisectDate = bisector(getDate).left;
 
-function VisxChart({ width, height, usable }: { width: number; height: number; usable: BenchmarkRun[] }) {
-  const { tooltipData, tooltipLeft, tooltipTop, showTooltip, hideTooltip } = useTooltip<TooltipData>();
+function VisxChart({ width, height, usable, connectPoints }: { width: number; height: number; usable: BenchmarkRun[]; connectPoints: boolean }) {
+  const { tooltipData, tooltipLeft, showTooltip, hideTooltip } = useTooltip<TooltipData>();
 
-  // Add 48px to PAD_BOTTOM to leave room for the legend at the bottom
-  const PAD_LEFT = 56, PAD_RIGHT = 56, PAD_TOP = 24, PAD_BOTTOM = 64;
+  // Reserve room for date labels and the wrapping legend.
+  const PAD_LEFT = 56, PAD_RIGHT = 56, PAD_TOP = 24, PAD_BOTTOM = 100;
   const innerWidth = Math.max(width - PAD_LEFT - PAD_RIGHT, 10);
   const innerHeight = Math.max(height - PAD_TOP - PAD_BOTTOM, 10);
 
   // Scales
   const xScale = useMemo(() => {
+    const [start, end] = extent(usable, getDate) as [Date, Date];
     return scaleTime({
       range: [0, innerWidth],
-      domain: extent(usable, getDate) as [Date, Date],
+      domain: start.valueOf() === end.valueOf()
+        ? [new Date(start.valueOf() - 1000), new Date(end.valueOf() + 1000)]
+        : [start, end],
     });
   }, [innerWidth, usable]);
 
@@ -145,35 +148,11 @@ function VisxChart({ width, height, usable }: { width: number; height: number; u
       d = x0.valueOf() - getDate(d0).valueOf() > getDate(d1).valueOf() - x0.valueOf() ? d1 : d0;
     }
 
-    // Determine which metric is closest to the mouse Y
-    const yVal = coords.y - PAD_TOP;
-    let closestMetric = metrics[0];
-    let minDistance = Infinity;
-
-    for (const m of metrics) {
-      const value = m.getVal(d);
-      if (value == null) continue;
-      const cy = m.scale(value);
-      const dist = Math.abs(cy - yVal);
-      if (dist < minDistance) {
-        minDistance = dist;
-        closestMetric = m;
-      }
-    }
-
-    const closestValue = closestMetric.getVal(d);
-    if (closestValue == null) return;
     showTooltip({
-      tooltipData: {
-        run: d,
-        metricLabel: closestMetric.label,
-        metricValue: format(closestValue, closestMetric.unit),
-        metricColor: closestMetric.stroke,
-      },
+      tooltipData: { run: d },
       tooltipLeft: xScale(getDate(d)) + PAD_LEFT,
-      tooltipTop: closestMetric.scale(closestValue) + PAD_TOP,
     });
-  }, [xScale, speedScale, timeScale, usable, metrics, showTooltip]);
+  }, [xScale, usable, showTooltip]);
 
   if (width < 10) return null;
 
@@ -224,7 +203,7 @@ function VisxChart({ width, height, usable }: { width: number; height: number; u
           <AxisBottom
             scale={xScale}
             top={innerHeight}
-            numTicks={2}
+            tickValues={usable.length === 1 ? [getDate(usable[0])] : [getDate(usable[0]), getDate(usable[usable.length - 1])]}
             stroke="transparent"
             tickStroke="transparent"
             tickFormat={(d) => formatDate(d as Date)}
@@ -241,7 +220,7 @@ function VisxChart({ width, height, usable }: { width: number; height: number; u
           {/* Lines and Hover Points */}
           {metrics.map((metric) => (
             <g key={metric.key}>
-              <LinePath<BenchmarkRun>
+              {connectPoints && <LinePath<BenchmarkRun>
                 data={usable}
                 x={(d) => xScale(getDate(d)) ?? 0}
                 y={(d) => metric.scale(metric.getVal(d) ?? 0) ?? 0}
@@ -251,13 +230,13 @@ function VisxChart({ width, height, usable }: { width: number; height: number; u
                 strokeWidth={2}
                 strokeLinecap="round"
                 strokeLinejoin="round"
-              />
+              />}
               {usable.map((d, i) => {
                 const cx = xScale(getDate(d));
                 const value = metric.getVal(d);
                 if (value == null) return null;
                 const cy = metric.scale(value);
-                const isHovered = tooltipData?.run === d && tooltipData?.metricLabel === metric.label;
+                const isHovered = tooltipData?.run === d;
                 return (
                   <circle
                     key={`${getDate(d).valueOf()}-${i}`}
@@ -299,8 +278,9 @@ function VisxChart({ width, height, usable }: { width: number; height: number; u
       {/* Tooltip HTML */}
       {tooltipData && (
         <Tooltip
-          top={(tooltipTop || 0) - 20}
-          left={tooltipLeft}
+          top={PAD_TOP + 8}
+          left={Math.min(Math.max((tooltipLeft ?? PAD_LEFT) + 12, 8), Math.max(8, width - 238))}
+          role="tooltip"
           style={{
             position: "absolute",
             pointerEvents: "none",
@@ -313,31 +293,25 @@ function VisxChart({ width, height, usable }: { width: number; height: number; u
             fontFamily: "var(--font-mono)",
             fontSize: "12px",
             borderRadius: "4px",
-            transform: "translate(-50%, -100%)",
+            width: "230px",
+            maxWidth: "calc(100% - 16px)",
             zIndex: 10,
             whiteSpace: "nowrap",
-            display: "flex",
-            alignItems: "center",
+            display: "grid",
             gap: "8px"
           }}
         >
-          <span style={{ color: "var(--text-secondary)" }}>
-            {tooltipData.metricLabel}
-            {tooltipData.metricLabel === "Decode Speed" && (() => {
-              const src = getDecodeSource(tooltipData.run);
-              return src === "agg"
-                ? <span style={{ fontSize: "10px", opacity: 0.65, marginLeft: "3px" }}>(agg)</span>
-                : null;
-            })()}
-          </span>
-          <span style={{ color: tooltipData.metricColor, fontWeight: 700 }}>
-            {tooltipData.metricValue}
-          </span>
+          {metrics.map((metric) => (
+            <div key={metric.key} style={{ display: "flex", justifyContent: "space-between", gap: "12px", color: metric.stroke }}>
+              <span>{metric.key === "ttft" ? "Time to first token" : metric.key === "decode" && tooltipData.run.median_decode_tps == null && tooltipData.run.aggregate_output_tps != null ? "Decode speed (agg)" : metric.label}</span>
+              <strong style={{ fontVariantNumeric: "tabular-nums" }}>{format(metric.getVal(tooltipData.run), metric.unit)}</strong>
+            </div>
+          ))}
         </Tooltip>
       )}
 
       {/* Legend */}
-      <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, display: "flex", gap: "16px", padding: "16px 24px", borderTop: "1px solid var(--border-subtle)", background: "var(--bg-panel)" }}>
+      <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, display: "flex", gap: "16px", flexWrap: "wrap", padding: "12px 24px", borderTop: "1px solid var(--border-subtle)", background: "var(--bg-panel)" }}>
         {metrics.map((item) => (
           <span key={item.key} style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "0.8rem", fontFamily: "var(--font-mono)", color: "var(--text-secondary)" }}>
             <span style={{ width: "18px", height: "2px", borderTop: `2px ${item.dash ? "dashed" : "solid"} ${item.stroke}`, display: "inline-block" }} aria-hidden="true" />

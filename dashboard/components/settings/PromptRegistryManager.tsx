@@ -1,5 +1,7 @@
 "use client";
 
+import { apiErrorMessage } from "../../lib/apiErrors";
+
 import { FormEvent, useEffect, useState } from "react";
 import { SettingsSectionSkeleton } from "../SkeletonState";
 import { RegistryDeleteDialog } from "./RegistryDeleteDialog";
@@ -19,6 +21,7 @@ export function PromptRegistryManager({ onNotify }: { onNotify: (message: string
   const [prompts, setPrompts] = useState<Prompt[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
 
   // Form State
   const [name, setName] = useState("");
@@ -35,7 +38,7 @@ export function PromptRegistryManager({ onNotify }: { onNotify: (message: string
     try {
       const response = await fetch("/api/prompts", { cache: "no-store" });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Unable to load prompts");
+      if (!response.ok) throw new Error(apiErrorMessage(data, "Unable to load prompts"));
       setPrompts(data);
       setError(null);
     } catch (cause) {
@@ -51,6 +54,9 @@ export function PromptRegistryManager({ onNotify }: { onNotify: (message: string
 
   const create = async (event: FormEvent) => {
     event.preventDefault();
+    if (saving) return;
+    setSaving(true);
+    setError(null);
     try {
       const response = await fetch("/api/prompts", {
         method: "POST",
@@ -62,7 +68,7 @@ export function PromptRegistryManager({ onNotify }: { onNotify: (message: string
         }),
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Unable to create prompt");
+      if (!response.ok) throw new Error(apiErrorMessage(data, "Unable to create prompt"));
       setName("");
       setDescription("");
       setSystemPrompt("");
@@ -70,12 +76,16 @@ export function PromptRegistryManager({ onNotify }: { onNotify: (message: string
       void load();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Unable to create prompt");
+    } finally {
+      setSaving(false);
     }
   };
 
   const saveEdit = async (event: FormEvent) => {
     event.preventDefault();
-    if (!editing) return;
+    if (!editing || saving) return;
+    setSaving(true);
+    setError(null);
     try {
       const response = await fetch(`/api/prompts/${editing.id}`, {
         method: "PUT",
@@ -86,12 +96,14 @@ export function PromptRegistryManager({ onNotify }: { onNotify: (message: string
         }),
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Unable to update prompt");
+      if (!response.ok) throw new Error(apiErrorMessage(data, "Unable to update prompt"));
       setEditing(null);
       onNotify(`Prompt '${data.name}' updated.`);
       void load();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Unable to update prompt");
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -107,7 +119,7 @@ export function PromptRegistryManager({ onNotify }: { onNotify: (message: string
         <div className="prompt-registry__summary"><strong>{prompts.length}</strong><span>prompts</span></div>
       </div>
 
-      {error && (
+      {error && !editing && (
         <div className="settings-error-banner" role="alert">
           <strong>Action Error</strong>: {error}
         </div>
@@ -156,8 +168,8 @@ export function PromptRegistryManager({ onNotify }: { onNotify: (message: string
         </label>
 
         <div className="settings-form-footer">
-          <button className="settings-btn-primary" type="submit">
-            Create prompt
+          <button className="settings-btn-primary" type="submit" disabled={saving}>
+            {saving ? "Saving…" : "Create prompt"}
           </button>
         </div>
       </form>
@@ -211,6 +223,7 @@ export function PromptRegistryManager({ onNotify }: { onNotify: (message: string
                           type="button"
                           className="settings-btn-ghost"
                           onClick={() => {
+                            setError(null);
                             setEditing({ ...prompt });
                           }}
                         >
@@ -241,6 +254,7 @@ export function PromptRegistryManager({ onNotify }: { onNotify: (message: string
           <form ref={editDialogRef} className="settings-modal-card prompt-registry__modal" onSubmit={saveEdit} role="dialog" aria-modal="true" aria-labelledby="prompt-editor-title" tabIndex={-1}>
             <span className="text-eyebrow">Prompt editor</span>
             <h3 id="prompt-editor-title" className="settings-modal-title">Edit {editing.name}</h3>
+            {error && <p className="settings-error-banner" role="alert">{error}</p>}
             <label className="settings-form-field">
               <span className="settings-field-label">Description</span>
               <input
@@ -251,6 +265,7 @@ export function PromptRegistryManager({ onNotify }: { onNotify: (message: string
             <label className="settings-form-field">
               <span className="settings-field-label">System prompt</span>
               <textarea
+                required
                 rows={10}
                 value={editing.system_prompt}
                 onChange={(e) => setEditing({ ...editing, system_prompt: e.target.value })}
@@ -260,8 +275,8 @@ export function PromptRegistryManager({ onNotify }: { onNotify: (message: string
               <button type="button" className="settings-btn-secondary" onClick={() => setEditing(null)}>
                 Close
               </button>
-              <button className="settings-btn-primary" type="submit">
-                Save changes
+              <button className="settings-btn-primary" type="submit" disabled={saving}>
+                {saving ? "Saving…" : "Save changes"}
               </button>
             </div>
           </form>
@@ -270,8 +285,8 @@ export function PromptRegistryManager({ onNotify }: { onNotify: (message: string
       <RegistryDeleteDialog
         resource="prompts" entry={pendingDelete} label="prompt"
         onCancel={() => setPendingDelete(null)}
-        onDeleted={(impact) => {
-          onNotify(`Prompt '${pendingDelete?.name}' and ${impact.run_count} associated runs deleted.`);
+        onDeleted={() => {
+          onNotify(`Prompt '${pendingDelete?.name}' deleted. Recorded results are unchanged.`);
           setPendingDelete(null);
           void load();
         }}

@@ -11,7 +11,7 @@ import {
   runDate,
 } from "../lib/benchmarks";
 import { LogoutButton } from "./LogoutButton";
-import { RecipeStudioControls } from "./recipes/RecipeStudioControls";
+import { BenchmarkRunControls } from "./BenchmarkRunControls";
 import { useManualRefresh } from "../lib/useManualRefresh";
 import { ManualRefreshControl } from "./ManualRefreshControl";
 import { SetupGuide } from "./SetupGuide";
@@ -112,9 +112,9 @@ export function BenchmarkOverview({
         </section>
       )}
 
-      {/* 3-Layer Recipe Studio */}
+      {/* Benchmark command controls */}
       {canManageSettings && <section id="benchmark-runner" style={{ marginBottom: "48px", width: "100%" }}>
-        <RecipeStudioControls availableModels={availableModels} registryRevision={registryRevision} />
+        <BenchmarkRunControls availableModels={availableModels} registryRevision={registryRevision} />
       </section>}
 
     </main>

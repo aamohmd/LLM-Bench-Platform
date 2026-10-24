@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
@@ -53,14 +53,6 @@ class PipelineConfigResponse(BaseModel):
     reranker_model: str | None = None
     agent_topology: str = "direct"
     parameters: dict[str, Any] = Field(default_factory=dict)
-
-
-class RecipePromptConfig(BaseModel):
-    system_template_id: str = Field(default="strict_json")
-    temperature: float = Field(default=0.0, ge=0.0, le=2.0)
-    response_format: str = Field(default="json_object")
-    max_output_tokens: int = Field(default=256, ge=16, le=4096)
-    system_prompt: str | None = None
 
 
 class PromptCreate(BaseModel):
@@ -131,63 +123,6 @@ class PromptComposeResponse(BaseModel):
     composite_name: str
     composite_hash: str
     system_prompt: str
-
-
-class RecipeRAGConfig(BaseModel):
-    chunk_size: int = Field(default=350)
-    chunk_overlap: int = Field(default=50)
-    top_k: int = Field(default=3, ge=1, le=20)
-    use_reranker: bool = Field(default=True)
-    reranker_model: str | None = Field(default="BAAI/bge-reranker-v2-m3")
-    injection_format: str = Field(default="xml_tags")
-
-
-class RecipeInfraConfig(BaseModel):
-    engine: str
-    model: str
-    quantization: str | None = None
-    max_context_len: int = Field(default=4096, ge=512, le=131072)
-    gpu_memory_utilization: float = Field(default=0.90, ge=0.5, le=0.98)
-    concurrency_limit: int = Field(default=10, ge=1, le=128)
-    tensor_parallel_size: int = Field(default=1, ge=1)
-    kv_cache_dtype: str | None = None
-    enable_prefix_caching: bool | None = None
-
-
-class RecipeSLAVerdict(BaseModel):
-    is_golden: bool = False
-    fit_status: Literal["Qualified", "Near-Miss", "Needs Evidence", "Rejected"] = "Needs Evidence"
-    decode_tps: float
-    median_ttft_s: float
-    p95_ttft_s: float
-    quality_score: float
-    peak_vram_pct: float
-    error_rate_pct: float = 0.0
-    evaluation_summary: str = ""
-
-
-class ProductionRecipe(BaseModel):
-    id: str
-    name: str
-    workload: str
-    workload_title: str
-    description: str = ""
-    prompt_config: RecipePromptConfig
-    rag_config: RecipeRAGConfig
-    infra_config: RecipeInfraConfig
-    sla_verdict: RecipeSLAVerdict
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-
-class RecipeExportResponse(BaseModel):
-    recipe_id: str
-    recipe_name: str
-    workload: str
-    vllm_command: str
-    docker_compose_yaml: str
-    rag_config_py: str
-    recipe_yaml: str
-    sla_certificate: dict[str, Any]
 
 
 class TraceStepItem(BaseModel):
@@ -286,6 +221,8 @@ class BenchmarkRun(BaseModel):
     quantization: str | None = None
     context_len: int | str | None = None
     engine_config: dict[str, Any] | None = None
+    prompt_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
     output_token_source: str | None = None
     hardware: str | None = None
 

@@ -305,7 +305,7 @@ export function ScorecardRow({ data, requiredConcurrency, alternativeCount = 0, 
           <Link
             href={`/models/${encodeURIComponent(run.model)}?engine=${encodeURIComponent(
               run.framework ?? ""
-            )}&hw=${encodeURIComponent(hardwareLabel(run))}`}
+            )}&hw=${encodeURIComponent(hardwareLabel(run))}&c=${run.concurrency ?? 1}${run.id ? `&run=${encodeURIComponent(run.id)}` : ""}`}
             className="link"
             style={{ fontSize: "0.95rem", fontWeight: 700, color: "var(--text-primary)", wordBreak: "break-word" }}
           >

@@ -1,5 +1,7 @@
 "use client";
 
+import { apiErrorMessage } from "../lib/apiErrors";
+
 import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { Check, KeyRound, Layers3, ListChecks, MessagesSquare, Search, Workflow, X } from "lucide-react";
@@ -97,7 +99,7 @@ export function SettingsConsole({ canManageSettings, initialSection }: { canMana
     try {
       const response = await fetch("/api/api-keys", { cache: "no-store" });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Unable to load API keys");
+      if (!response.ok) throw new Error(apiErrorMessage(data, "Unable to load API keys"));
       setKeys(data);
       setError(null);
     } catch (cause) {
@@ -172,7 +174,7 @@ export function SettingsConsole({ canManageSettings, initialSection }: { canMana
 
       const data = (await response.json()) as CreatedKey | { detail?: string };
       if (!response.ok || !("key" in data)) {
-        throw new Error("detail" in data ? data.detail || "Unable to create API key" : "Unable to create API key");
+        throw new Error(apiErrorMessage(data, "Unable to create API key"));
       }
 
       setCreatedSecret(data.key);
@@ -196,7 +198,7 @@ export function SettingsConsole({ canManageSettings, initialSection }: { canMana
     try {
       const response = await fetch(`/api/api-keys/${revokingKey.id}`, { method: "DELETE" });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Unable to revoke API key");
+      if (!response.ok) throw new Error(apiErrorMessage(data, "Unable to revoke API key"));
 
       setKeys((prev) =>
         prev.map((k) =>
@@ -259,7 +261,7 @@ export function SettingsConsole({ canManageSettings, initialSection }: { canMana
       typeof window !== "undefined" && window.location.origin
         ? window.location.origin
         : (process.env.NEXT_PUBLIC_BENCHMARK_API_URL || "<BACKEND_URL>");
-    return `# Set MODEL_ID, ENGINE, SUITE_ID, PROMPT_NAME and STRATEGY_NAME to your registered configuration.\npython3 scripts/run_remote_benchmark.py "\${MODEL_ID:?Set MODEL_ID}" --backend-url ${shellQuote(backendUrl)} --api-key ${shellQuote(createdSecret)} --engine "\${ENGINE:?Set ENGINE}" --suite "\${SUITE_ID:?Set SUITE_ID}" --prompt "\${PROMPT_NAME:?Set PROMPT_NAME}" --strategy "\${STRATEGY_NAME:?Set STRATEGY_NAME}" --concurrency 1 --mode warm --runs 1 --experiment-tag "api-onboarding-$(date -u +%Y%m%dT%H%M%SZ)"`;
+    return `# Set MODEL_ID, ENGINE, SUITE_ID, PROMPT_NAME and STRATEGY_NAME to your registered configuration.\nbash scripts/run.sh "\${MODEL_ID:?Set MODEL_ID}" --backend-url ${shellQuote(backendUrl)} --api-key ${shellQuote(createdSecret)} --engine "\${ENGINE:?Set ENGINE}" --suite "\${SUITE_ID:?Set SUITE_ID}" --prompt "\${PROMPT_NAME:?Set PROMPT_NAME}" --strategy "\${STRATEGY_NAME:?Set STRATEGY_NAME}" --concurrency 1 --mode warm --runs 1 --experiment-tag "api-onboarding-$(date -u +%Y%m%dT%H%M%SZ)"`;
   }, [createdSecret]);
 
   if (!canManageSettings) {
@@ -509,6 +511,7 @@ export function SettingsConsole({ canManageSettings, initialSection }: { canMana
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Search keys by name or environment..."
+            aria-label="Search API keys"
           />
           {searchQuery && (
             <button

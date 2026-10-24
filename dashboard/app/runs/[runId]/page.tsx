@@ -1,3 +1,4 @@
+import { redirect } from "next/navigation";
 import Link from "next/link";
 import { fetchRunDetailWithStatus } from "../../../lib/benchmarks";
 import { ApiUnavailableState } from "../../../components/ApiUnavailableState";
@@ -11,6 +12,7 @@ import {
   hardwareStatusLabel,
   isLegacyOrNonComparable,
   tokenSourceLabel,
+  recordedRequestCount,
   type BenchmarkRunDetail,
   formatMetric,
   categoryLabel,
@@ -31,6 +33,9 @@ export default async function RunPage({ params }: { params: Promise<{ runId: str
   if (result === null) {
     return <ApiUnavailableState />;
   }
+
+  if (result.status === 401) redirect("/login");
+  if (result.status === 403) return <ApiUnavailableState reason="forbidden" />;
 
   if (result.status !== 200 && result.status !== 404) {
     return (
@@ -62,26 +67,9 @@ export default async function RunPage({ params }: { params: Promise<{ runId: str
   const hasHardware = !!(run.hw_cpu_model || run.hw_gpu_name || run.hw_platform || run.hw_detection_status);
   const qualityPct = run.quality_score != null ? Math.round(run.quality_score * 100) : null;
 
-  const promptName =
-    (run.prompt_name && !["standard", "strict_json", "chain_of_thought", "negative_compliance"].includes(run.prompt_name)
-      ? run.prompt_name
-      : null) ||
-    run.base_prompt_name ||
-    run.engine_config?.prompt_name ||
-    run.suite_id ||
-    "standard";
-
-  const rawStrategy =
-    run.prompt_strategy ||
-    run.directive_name ||
-    run.engine_config?.prompt_strategy ||
-    (run as any).prompt_strategy ||
-    (run.prompt_name && ["standard", "strict_json", "chain_of_thought", "negative_compliance"].includes(run.prompt_name)
-      ? run.prompt_name
-      : null) ||
-    "standard";
-
-  const strategy = formatPromptStrategy(rawStrategy);
+  const promptName = run.prompt_name || run.base_prompt_name || run.engine_config?.prompt_name || "Unspecified";
+  const rawStrategy = run.prompt_strategy || run.directive_name || run.engine_config?.prompt_strategy;
+  const strategy = formatPromptStrategy(rawStrategy) || "Unspecified";
 
   return (
     <main className="visualizer run-page">
@@ -89,7 +77,7 @@ export default async function RunPage({ params }: { params: Promise<{ runId: str
         <div className="run-hero-main">
           <div>
             <Link
-              href={`/models/${encodeURIComponent(run.model)}?engine=${encodeURIComponent(run.framework ?? "")}&hw=${encodeURIComponent(hardwareLabel(run))}`}
+              href={`/models/${encodeURIComponent(run.model)}?engine=${encodeURIComponent(run.framework ?? "")}&hw=${encodeURIComponent(hardwareLabel(run))}&c=${run.concurrency ?? ""}&run=${encodeURIComponent(run.id ?? runId)}`}
               className="text-eyebrow link"
             >
               &larr; Back to model
@@ -107,22 +95,13 @@ export default async function RunPage({ params }: { params: Promise<{ runId: str
                   {run.experiment_tag}
                 </span>
               )}
-              {run.pipeline_config_id && (
-                <Link
-                  href="/#recipe-studio"
-                  className="tag tag-vllm run-tag-link"
-                >
-                  Recipe Studio
-                </Link>
-              )}
-              <Link
-                href="/settings"
+              <span
                 className="tag tag-prompt"
                 style={{ textDecoration: "none" }}
                 title={`System Prompt: ${promptName}`}
               >
                 p: {promptName}
-              </Link>
+              </span>
               <span
                 className="tag"
                 style={{ background: "var(--accent-blue-dim)", color: "var(--accent-blue)", borderColor: "rgba(41,121,255,0.3)" }}
@@ -133,6 +112,7 @@ export default async function RunPage({ params }: { params: Promise<{ runId: str
             </div>
             <p className="text-eyebrow run-page-kicker">Benchmark run</p>
             <h1 className="text-display run-title">{run.model.split("/").pop()?.replace(":latest", "")}</h1>
+            {run.model.includes("/") && <p className="text-sub-mono" style={{ overflowWrap: "anywhere" }}>{run.model}</p>}
             <p className="text-sub-mono run-id">Run ID: {run.id}</p>
           </div>
 
@@ -173,11 +153,11 @@ export default async function RunPage({ params }: { params: Promise<{ runId: str
         <div className="run-context-item">
           <span className="text-eyebrow">Sample iterations</span>
           <p className="text-mono-data-sm">
-            {run.num_runs || 1} iterations ({run.quality_total_count ?? run.num_runs ?? 1} total requests)
+            {run.num_runs ?? "—"} iterations ({recordedRequestCount(run) ?? "—"} total requests)
           </p>
         </div>
         <div className="run-context-item">
-          <span className="text-eyebrow">Token footprint (P / O)</span>
+          <span className="text-eyebrow">Median tokens per request (P / O)</span>
           <p className="text-mono-data-sm">
             {run.prompt_tokens ?? "—"} prompt / {run.output_tokens ?? "—"} output
           </p>
@@ -187,7 +167,7 @@ export default async function RunPage({ params }: { params: Promise<{ runId: str
           <p className="text-mono-data-sm">
             {promptName}
             <br />
-            <small>{run.prompt_sha256?.slice(0, 12) ?? "provenance-tracked"}</small>
+            <small>{run.prompt_sha256?.slice(0, 12) ?? "Hash not recorded"}</small>
           </p>
         </div>
         <div className="run-context-item">
@@ -202,7 +182,22 @@ export default async function RunPage({ params }: { params: Promise<{ runId: str
       {run.engine_config && Object.keys(run.engine_config).length > 0 && (
         <section className="run-section">
           <h2 className="text-eyebrow run-section-label">Tuning configuration</h2>
+          <p className="text-sub" style={{ marginBottom: "16px" }}>
+            {run.engine_config.runtime_configuration_source === "runner_launched_vllm"
+              ? "The runner launched a dedicated vLLM server. Startup settings below are process arguments; memory and timing are measured separately."
+              : run.engine_config.runtime_configuration_source === "ollama_request_options"
+              ? "Request settings were sent to Ollama. Requested context and engine-reported allocation are recorded separately."
+              : "This run used an existing inference server. Unreported server startup settings remain unknown."}
+          </p>
           <div className="panel panel-blue run-config-grid">
+            <div>
+              <span className="text-eyebrow">Engine-reported context</span>
+              <p className="text-mono-data-sm">{run.context_len ? `${run.context_len} tokens` : "Unavailable"}</p>
+            </div>
+            <div>
+              <span className="text-eyebrow">Recorded quantization</span>
+              <p className="text-mono-data-sm">{run.quantization ?? "Unavailable"}</p>
+            </div>
             <div>
               <span className="text-eyebrow" style={{ color: "var(--accent-lime)", fontSize: "0.65rem" }}>LAYER 1A · SYSTEM PROMPT</span>
               <p className="text-mono-data-sm" style={{ margin: "4px 0 0 0", color: "var(--text-primary)", fontSize: "0.85rem" }}>
@@ -244,7 +239,7 @@ export default async function RunPage({ params }: { params: Promise<{ runId: str
               .map(([k, v]) => v != null && (
                 <div key={k}>
                   <span className="text-eyebrow" style={{ color: "var(--text-tertiary)", fontSize: "0.65rem" }}>{k.replace(/_/g, " ").toUpperCase()}</span>
-                  <p className="text-mono-data-sm" style={{ margin: "4px 0 0 0", color: "var(--text-primary)", fontSize: "0.85rem" }}>{String(v)}</p>
+                  <p className="text-mono-data-sm" style={{ margin: "4px 0 0 0", color: "var(--text-primary)", fontSize: "0.85rem", overflowWrap: "anywhere" }}>{typeof v === "object" ? JSON.stringify(v) : String(v)}</p>
                 </div>
               ))
             }
@@ -261,7 +256,7 @@ export default async function RunPage({ params }: { params: Promise<{ runId: str
             <div className="panel-body metric-block" style={{ minHeight: "120px", justifyContent: "space-between", padding: "20px" }}>
               <span className="text-eyebrow">DECODE THROUGHPUT</span>
               <strong className="text-mono-data text-display-md" style={{ color: "var(--text-primary)" }}>
-                {formatMetric(run.median_decode_tps || run.aggregate_output_tps, " tok/s")}
+                {formatMetric(run.median_decode_tps ?? run.aggregate_output_tps, " tok/s")}
               </strong>
               <span className="text-sub-mono" style={{ fontSize: "0.75rem", color: "var(--text-tertiary)" }}>
                 Generation speed during output stream
@@ -287,7 +282,7 @@ export default async function RunPage({ params }: { params: Promise<{ runId: str
                 {formatMetric(run.median_ttft_s, "s")}
               </strong>
               <span className="text-sub-mono" style={{ fontSize: "0.75rem", color: "var(--text-tertiary)" }}>
-                Median time to first token ({run.p95_ttft_s ? `p95 tail: ${formatMetric(run.p95_ttft_s, "s")}` : "Client roundtrip"})
+                Median time to first token ({run.p95_ttft_s != null ? `p95 tail: ${formatMetric(run.p95_ttft_s, "s")}` : "Client roundtrip"})
               </span>
             </div>
           </div>
@@ -310,10 +305,10 @@ export default async function RunPage({ params }: { params: Promise<{ runId: str
             <div className="panel-body metric-block" style={{ minHeight: "120px", justifyContent: "space-between", padding: "20px" }}>
               <span className="text-eyebrow">VRAM / MODEL MEMORY</span>
               <strong className="text-mono-data text-display-md" style={{ color: "var(--text-primary)" }}>
-                {run.peak_gpu_mem_mb ? formatMetric(run.peak_gpu_mem_mb / 1024, " GB") : formatMetric(run.median_model_memory_mb, " MB")}
+                {run.peak_gpu_mem_mb != null ? formatMetric(run.peak_gpu_mem_mb / 1024, " GB") : formatMetric(run.median_model_memory_mb, " MB")}
               </strong>
               <span className="text-sub-mono" style={{ fontSize: "0.75rem", color: "var(--text-tertiary)" }}>
-                {run.peak_gpu_mem_mb ? "Peak GPU VRAM allocation" : "Loaded model resident footprint"}
+                {run.peak_gpu_mem_mb != null ? "Peak GPU VRAM allocation" : "Loaded model resident footprint"}
               </span>
             </div>
           </div>
@@ -354,7 +349,7 @@ export default async function RunPage({ params }: { params: Promise<{ runId: str
                 </strong>
                 <div style={{ display: "flex", flexDirection: "column" }}>
                   <span className="text-mono-data-sm" style={{ fontWeight: 700, color: "var(--text-primary)" }}>
-                    {run.quality_success_count ?? 0} / {run.quality_total_count ?? 100} Tasks Succeeded
+                    {run.quality_success_count ?? "—"} / {run.quality_total_count ?? "—"} Tasks Succeeded
                   </span>
                   <span className="text-sub-mono" style={{ fontSize: "0.78rem", color: "var(--text-tertiary)" }}>
                     Evaluated on {categoryLabel(run.prompt_category)} Suite
@@ -364,44 +359,42 @@ export default async function RunPage({ params }: { params: Promise<{ runId: str
             </div>
 
             {/* Diagnostic Failure Mode Metrics Grid */}
-            {run.task_scores && (() => {
+            {run.task_scores && Object.keys(run.task_scores).length > 0 && (() => {
               const allTasks = Object.values(run.task_scores);
-              const correct = allTasks.filter((t) => t.score === 1.0);
-              const formatFails = allTasks.filter((t) => t.score === null);
-              const reasoningFails = allTasks.filter((t) => t.score === 0);
-              const answerTagCount = correct.filter((t) => t.extraction_path === "answer_tag").length;
-              const fallbackCount = correct.filter((t) => t.extraction_path === "fallback_extraction").length;
+              const unscored = allTasks.filter((t) => t.score == null);
+              const scorerFails = allTasks.filter((t) => t.score != null && (t.failed ?? t.score < 1));
+              const withReason = allTasks.filter((t) => Boolean(t.reason));
 
               return (
                 <div style={{ marginTop: "20px" }}>
                   <div className="run-diagnostic-grid">
                     <div className="run-diagnostic-item">
-                      <span className="text-eyebrow" style={{ fontSize: "0.68rem", color: "var(--text-tertiary)" }}>REASONING FAILURES</span>
-                      <p className="text-mono-data-sm" style={{ margin: "6px 0 0 0", color: reasoningFails.length > 0 ? "var(--accent-amber)" : "var(--accent-emerald)", fontWeight: 700 }}>
-                        {reasoningFails.length} tasks outside tolerance
+                      <span className="text-eyebrow" style={{ fontSize: "0.68rem", color: "var(--text-tertiary)" }}>SCORER FAILURES</span>
+                      <p className="text-mono-data-sm" style={{ margin: "6px 0 0 0", color: scorerFails.length > 0 ? "var(--accent-amber)" : "var(--accent-emerald)", fontWeight: 700 }}>
+                        {scorerFails.length} tasks did not pass
                       </p>
                       <span className="text-sub-mono" style={{ fontSize: "0.7rem", color: "var(--text-tertiary)" }}>
-                        Calculated number deviated &gt; ±2%
+                        Evaluated against each task’s configured scoring rules
                       </span>
                     </div>
 
                     <div className="run-diagnostic-item">
-                      <span className="text-eyebrow" style={{ fontSize: "0.68rem", color: "var(--text-tertiary)" }}>FORMAT FAILURES</span>
-                      <p className="text-mono-data-sm" style={{ margin: "6px 0 0 0", color: formatFails.length > 0 ? "var(--accent-rose)" : "var(--accent-emerald)", fontWeight: 700 }}>
-                        {formatFails.length} format compliance errors
+                      <span className="text-eyebrow" style={{ fontSize: "0.68rem", color: "var(--text-tertiary)" }}>UNSCORED TASKS</span>
+                      <p className="text-mono-data-sm" style={{ margin: "6px 0 0 0", color: unscored.length > 0 ? "var(--accent-rose)" : "var(--accent-emerald)", fontWeight: 700 }}>
+                        {unscored.length} tasks without a numeric score
                       </p>
                       <span className="text-sub-mono" style={{ fontSize: "0.7rem", color: "var(--text-tertiary)" }}>
-                        {formatFails.length === 0 ? "100% followed output schema" : "No number extractable"}
+                        {unscored.length === 0 ? "Every task has a recorded score" : "Inspect the task audit log for the reason"}
                       </span>
                     </div>
 
                     <div className="run-diagnostic-item">
-                      <span className="text-eyebrow" style={{ fontSize: "0.68rem", color: "var(--text-tertiary)" }}>EXTRACTION METHOD</span>
+                      <span className="text-eyebrow" style={{ fontSize: "0.68rem", color: "var(--text-tertiary)" }}>SCORING EVIDENCE</span>
                       <p className="text-mono-data-sm" style={{ margin: "6px 0 0 0", color: "var(--text-primary)", fontWeight: 700 }}>
-                        {answerTagCount} tag / {fallbackCount} fallback
+                        {withReason.length} / {allTasks.length} task decisions
                       </p>
                       <span className="text-sub-mono" style={{ fontSize: "0.7rem", color: "var(--text-tertiary)" }}>
-                        Structured ANSWER tag vs regex fallback
+                        Recorded explanations are available in the task audit log
                       </span>
                     </div>
                   </div>
@@ -432,8 +425,8 @@ export default async function RunPage({ params }: { params: Promise<{ runId: str
                           >
                             <div>
                               <strong style={{ color: "var(--text-primary)" }}>{taskId}</strong>
-                              {taskScore.failed && (
-                                <p style={{ margin: "2px 0 0 0", color: "var(--accent-rose)", fontSize: "0.75rem" }}>
+                              {taskScore.reason && (
+                                <p style={{ margin: "2px 0 0 0", color: taskScore.failed ? "var(--accent-rose)" : "var(--text-secondary)", fontSize: "0.75rem" }}>
                                   Reason: {taskScore.reason}
                                 </p>
                               )}
@@ -443,11 +436,11 @@ export default async function RunPage({ params }: { params: Promise<{ runId: str
                               style={{
                                 fontSize: "0.65rem",
                                 fontWeight: 700,
-                                background: taskScore.failed ? "var(--accent-rose-dim)" : "var(--accent-emerald-dim)",
-                                color: taskScore.failed ? "var(--accent-rose)" : "var(--accent-emerald)",
+                                background: taskScore.failed ? "var(--accent-rose-dim)" : taskScore.score == null ? "var(--bg-surface)" : "var(--accent-emerald-dim)",
+                                color: taskScore.failed ? "var(--accent-rose)" : taskScore.score == null ? "var(--text-secondary)" : "var(--accent-emerald)",
                               }}
                             >
-                              {taskScore.failed ? "FAIL" : "PASS"}
+                              {taskScore.score == null ? (taskScore.failed ? "ERROR" : "UNSCORED") : taskScore.failed ? "FAIL" : "PASS"}
                             </span>
                           </div>
                         ))}

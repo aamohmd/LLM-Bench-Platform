@@ -1,5 +1,7 @@
 "use client";
 
+import { apiErrorMessage } from "../../lib/apiErrors";
+
 import { useEffect, useState } from "react";
 import { ConfirmDialog } from "../ConfirmDialog";
 
@@ -26,7 +28,7 @@ export function RegistryDeleteDialog({ resource, entry, label, onCancel, onDelet
     fetch(path + "/deletion-impact", { cache: "no-store", signal: controller.signal })
       .then(async (response) => {
         const data = await response.json();
-        if (!response.ok) throw new Error(data.detail || "Unable to check associated runs");
+        if (!response.ok) throw new Error(apiErrorMessage(data, "Unable to check associated runs"));
         if (!controller.signal.aborted) setImpact(data);
       })
       .catch((cause) => { if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : "Unable to check associated runs"); });
@@ -34,13 +36,13 @@ export function RegistryDeleteDialog({ resource, entry, label, onCancel, onDelet
   }, [entryId, path]);
 
   const remove = async () => {
-    if (!impact || deleting) return;
+    if (!impact || impact.run_count > 0 || deleting) return;
     setDeleting(true);
     setError("");
     try {
       const response = await fetch(`${path}?expected_run_count=${impact.run_count}`, { method: "DELETE" });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Unable to delete configuration");
+      if (!response.ok) throw new Error(apiErrorMessage(data, "Unable to delete configuration"));
       onDeleted(data);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Unable to delete configuration");
@@ -53,12 +55,14 @@ export function RegistryDeleteDialog({ resource, entry, label, onCancel, onDelet
 
   return <ConfirmDialog
     open={Boolean(entry)}
-    title={`Delete ${label}?`}
+    title={impact && impact.run_count > 0 ? `Cannot delete ${label}` : `Delete ${label}?`}
     description={error ? `${error} Close this dialog and try again.` : impact
-      ? `Permanently delete “${entry?.name}” and ${impact.run_count} associated benchmark run${impact.run_count === 1 ? "" : "s"}?${resource === "suites" ? ` This also deletes ${impact.task_count} task${impact.task_count === 1 ? "" : "s"} and ${impact.category_count} categor${impact.category_count === 1 ? "y" : "ies"}.` : ""} This cannot be undone.`
+      ? impact.run_count > 0
+        ? `“${entry?.name}” is used by ${impact.run_count} recorded benchmark run${impact.run_count === 1 ? "" : "s"}. Deletion is unavailable to preserve those results. You can continue using this configuration or create another one.`
+        : `Permanently delete “${entry?.name}”?${resource === "suites" ? ` This also deletes ${impact.task_count} task${impact.task_count === 1 ? "" : "s"} and ${impact.category_count} categor${impact.category_count === 1 ? "y" : "ies"}.` : ""} No recorded benchmark runs will be removed. This cannot be undone.`
       : "Checking associated benchmark runs…"}
-    confirmLabel={`Delete ${label} and associated runs`}
-    confirmDisabled={!impact || Boolean(error)}
+    confirmLabel={impact && impact.run_count > 0 ? "In use by recorded runs" : `Delete ${label}`}
+    confirmDisabled={!impact || impact.run_count > 0 || Boolean(error)}
     busy={deleting}
     onCancel={() => { if (!deleting) onCancel(); }}
     onConfirm={() => void remove()}

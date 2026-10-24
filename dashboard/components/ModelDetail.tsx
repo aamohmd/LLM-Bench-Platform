@@ -1,18 +1,16 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 
 import { ClickableRow } from "./ClickableRow";
 import { QualityDrilldown } from "./QualityDrilldown";
 import { HistoryChart } from "./HistoryChartLoader";
 import { useManualRefresh } from "../lib/useManualRefresh";
 import { ManualRefreshControl } from "./ManualRefreshControl";
-import { useState, useEffect, useMemo } from "react";
-import { AlertTriangle, Trophy } from "lucide-react";
+import { AlertTriangle } from "lucide-react";
 import {
-  getUnifiedDeploymentMetrics,
-  deploymentKey,
+  selectModelRunContext,
+  modelDeploymentKey,
   engineLabel,
   engineTagClass,
   errorRate,
@@ -23,8 +21,6 @@ import {
   tokenSourceLabel,
   type BenchmarkRun,
   type CompositeProfilesResponse,
-  type ProductionRecipe,
-  fetchRecipes,
   STRATEGY_LABELS,
   formatMetric,
   newestFirst,
@@ -102,25 +98,17 @@ function renderExperimentCell(run: BenchmarkRun) {
   const hasTuning = Boolean(promptName || strategy || outputCeiling || topK || reranker);
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "6px", alignItems: "flex-start" }}>
-      {/* 1. Normal experiment tag with no special parsing */}
-      <span
-        className="tag"
-        style={{
-          background: "rgba(255,255,255,0.08)",
-          color: "var(--text-primary)",
-          fontSize: "0.72rem",
-          fontFamily: "var(--font-mono)",
-          wordBreak: "break-all",
-        }}
-        title={run.experiment_tag || undefined}
-      >
+    <div className="execution-log__identity">
+      <span className="execution-log__experiment" title={run.experiment_tag || undefined}>
         {tagDisplay}
       </span>
 
-      {/* 2. Active Tuning Configurations from DB */}
+      <span className="execution-log__secondary">{displayDate(run)} · {run.num_runs ? `${run.num_runs} repetition${run.num_runs === 1 ? "" : "s"}` : "Raw run"}</span>
       {hasTuning && (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: "4px" }}>
+        <details className="execution-log__settings" onClick={(event) => event.stopPropagation()}>
+          <summary>Run settings</summary>
+          <div className="execution-log__full-name">{tagDisplay}</div>
+          <div className="execution-log__tags">
           {promptName && (
             <span
               className="tag tag-prompt"
@@ -151,6 +139,15 @@ function renderExperimentCell(run: BenchmarkRun) {
               {outputCeiling}
             </span>
           )}
+          {engineConfig?.temperature != null && (
+            <span className="tag" title="Request sampling temperature">T: {engineConfig.temperature}</span>
+          )}
+          {engineConfig?.response_format === "json" && (
+            <span className="tag" title="JSON response mode was requested">JSON</span>
+          )}
+          {engineConfig?.runtime_configuration_source === "runner_launched_vllm" && (
+            <span className="tag" title="The runner started this vLLM server with saved launch arguments">Managed vLLM</span>
+          )}
           {topK && (
             <span className="tag" style={{ background: "rgba(255,255,255,0.06)", fontSize: "0.68rem" }}>
               {topK}
@@ -164,7 +161,8 @@ function renderExperimentCell(run: BenchmarkRun) {
               rerank
             </span>
           )}
-        </div>
+          </div>
+        </details>
       )}
     </div>
   );
@@ -179,6 +177,8 @@ export function ModelDetail({
   engine,
   hardware,
   concurrency,
+  selectedRunId,
+  canViewTraces = false,
   compositeProfiles,
 }: {
   model: string;
@@ -187,129 +187,31 @@ export function ModelDetail({
   engine?: string;
   hardware?: string;
   concurrency?: number;
+  selectedRunId?: string;
+  canViewTraces?: boolean;
   compositeProfiles?: CompositeProfilesResponse | null;
 }) {
-  const router = useRouter();
-
-  // Interactive client-side deployment selection state
-  const [selectedEngine, setSelectedEngine] = useState<string | undefined>(engine);
-  const [selectedHardware, setSelectedHardware] = useState<string | undefined>(hardware);
-  const [selectedConcurrency, setSelectedConcurrency] = useState<number | undefined>(concurrency);
-
-  useEffect(() => {
-    setSelectedEngine(engine);
-  }, [engine]);
-
-  useEffect(() => {
-    setSelectedHardware(hardware);
-  }, [hardware]);
-
-  useEffect(() => {
-    setSelectedConcurrency(concurrency);
-  }, [concurrency]);
+  const activeRunId = selectedRunId;
   const allModelRuns = newestFirst((history.length ? history : runs).filter((run) => run.model === model));
-  const absoluteLatest = allModelRuns[0];
 
   const { isRefreshing, lastRefreshedAgo, refreshNow } = useManualRefresh();
 
-  // Fetch golden recipe for this model from the Tuning Lab
-  const [goldenRecipe, setGoldenRecipe] = useState<ProductionRecipe | null>(null);
-  const [recipeError, setRecipeError] = useState<string | null>(null);
-  useEffect(() => {
-    fetchRecipes()
-      .then((recipes) => {
-        if (!recipes) return;
-        const modelBase = model.split("/").pop()?.toLowerCase().replace(/[:.]/g, "") ?? "";
-        const match = recipes.find((r) =>
-          r.sla_verdict.is_golden &&
-          r.infra_config.model.toLowerCase().replace(/[:.]/g, "").includes(modelBase)
-        );
-        setGoldenRecipe(match ?? null);
-        setRecipeError(null);
-      })
-      .catch(() => setRecipeError("Recommended recipe data could not be loaded."));
-  }, [model]);
-
-  // Calculate physical deployment keys from ALL model runs for the Cross-Hardware table
-  const allSpeedRuns = allModelRuns.filter((run) => run.prompt_category !== "quality_suite");
-  const physicalDeploymentKey = (run: BenchmarkRun) =>
-    JSON.stringify([
-      run.framework || "unknown",
-      hardwareLabel(run),
-      run.quantization || "unknown",
-      run.context_len || "default",
-      run.concurrency ?? 1,
-    ]);
-  const deploymentKeys = [...new Set(allSpeedRuns.map(physicalDeploymentKey))];
-  const hasCrossDeployment = deploymentKeys.length > 1;
-
-  const availableCrossConcurrencies = useMemo(() => {
-    const s = new Set<number>();
-    allSpeedRuns.forEach((r) => s.add(r.concurrency ?? 1));
-    return Array.from(s).sort((a, b) => b - a);
-  }, [allSpeedRuns]);
-
-  const [crossHwConcurrency, setCrossHwConcurrency] = useState<number | "all">("all");
-
-  const filteredDeploymentKeys = useMemo(() => {
-    if (crossHwConcurrency === "all") return deploymentKeys;
-    return deploymentKeys.filter((key) => {
-      try {
-        const parsed = JSON.parse(key);
-        return parsed[4] === crossHwConcurrency;
-      } catch {
-        return true;
-      }
-    });
-  }, [deploymentKeys, crossHwConcurrency]);
-
-  // Determine the primary hardware context for this page
-  const defaultBestRun = allSpeedRuns.length > 0
-    ? [...allSpeedRuns].sort((a, b) => (b.median_decode_tps ?? b.aggregate_output_tps ?? 0) - (a.median_decode_tps ?? a.aggregate_output_tps ?? 0))[0]
-    : allModelRuns[0];
-  
-  const targetEngine = selectedEngine || defaultBestRun?.framework || "unknown";
-  const targetHardware = selectedHardware || (defaultBestRun ? hardwareLabel(defaultBestRun) : "");
-  const targetConcurrency = selectedConcurrency;
-
-  // Filter the primary sourceRuns down to this deployment context (with resilient fallback)
-  const matchedRuns = allModelRuns.filter((run) => {
-    const runEngine = run.framework || "unknown";
-    const runHwLabel = hardwareLabel(run);
-    const runGpu = run.hw_gpu_name || "";
-    const runAws = run.hw_aws_instance_type || "";
-    const runConc = run.concurrency ?? 1;
-
-    const matchesEngine = !targetEngine || targetEngine === "unknown" || runEngine.toLowerCase() === targetEngine.toLowerCase();
-    const matchesHardware =
-      !targetHardware ||
-      targetHardware === "unknown" ||
-      runHwLabel.toLowerCase() === targetHardware.toLowerCase() ||
-      runGpu.toLowerCase() === targetHardware.toLowerCase() ||
-      runAws.toLowerCase() === targetHardware.toLowerCase();
-    const matchesConcurrency = targetConcurrency === undefined || runConc === targetConcurrency;
-
-    return matchesEngine && matchesHardware && matchesConcurrency;
+  const deploymentGroups = new Map<string, BenchmarkRun[]>();
+  for (const run of allModelRuns) {
+    const key = modelDeploymentKey(run);
+    const group = deploymentGroups.get(key) ?? [];
+    group.push(run);
+    deploymentGroups.set(key, group);
+  }
+  const deployments = Array.from(deploymentGroups, ([key, groupRuns]) => ({ key, runs: groupRuns, recorded: groupRuns[0] }))
+    .sort((a, b) => engineLabel(a.recorded.framework).localeCompare(engineLabel(b.recorded.framework))
+      || hardwareLabel(a.recorded).localeCompare(hardwareLabel(b.recorded))
+      || (a.recorded.concurrency ?? 1) - (b.recorded.concurrency ?? 1));
+  const { sourceRuns, latest, targetEngine, targetHardware, targetConcurrency } = selectModelRunContext(allModelRuns, {
+    engine, hardware, concurrency, runId: activeRunId,
   });
-
-  const sourceRuns = matchedRuns.length > 0 ? matchedRuns : allModelRuns;
-  const speedRuns = sourceRuns.filter((run) => run.prompt_category !== "quality_suite");
-  const unifiedSourceRuns = getUnifiedDeploymentMetrics(sourceRuns);
-  const latest = unifiedSourceRuns.length > 0
-    ? [...unifiedSourceRuns].sort((a, b) => (b.median_decode_tps ?? b.aggregate_output_tps ?? 0) - (a.median_decode_tps ?? a.aggregate_output_tps ?? 0))[0]
-    : sourceRuns[0];
-  const framework = latest?.framework || targetEngine;
-
-  const handleSelectDeployment = (eng: string, hw: string, conc: number) => {
-    setSelectedEngine(eng);
-    setSelectedHardware(hw);
-    setSelectedConcurrency(conc);
-    const params = new URLSearchParams();
-    params.set("engine", eng);
-    params.set("hw", hw);
-    params.set("c", conc.toString());
-    router.push(`/models/${encodeURIComponent(model)}?${params.toString()}`, { scroll: false });
-  };
+  const absoluteLatest = sourceRuns[0];
+  const chartRuns = sourceRuns;
 
   return <main className="visualizer">
     <header className="split-hero">
@@ -322,7 +224,7 @@ export function ModelDetail({
           <span className={`tag ${engineTagClass(targetEngine)}`}>{engineLabel(targetEngine)}</span>
           <span className="tag" style={{ background: "rgba(255,255,255,0.05)" }}>{targetHardware}</span>
           <span className="tag" style={{ background: (latest?.concurrency ?? targetConcurrency ?? 1) > 1 ? "rgba(41,121,255,0.12)" : "rgba(255,255,255,0.06)", color: (latest?.concurrency ?? targetConcurrency ?? 1) > 1 ? "var(--accent-blue)" : "var(--text-secondary)", fontWeight: 700 }}>
-            C={latest?.concurrency ?? targetConcurrency ?? 1}
+            C={latest?.concurrency ?? targetConcurrency ?? "—"}
           </span>
           <ManualRefreshControl
             isRefreshing={isRefreshing}
@@ -331,10 +233,13 @@ export function ModelDetail({
           />
         </div>
         <h1 className="text-display" style={{ wordBreak: "break-all" }}>{model.split("/").pop()?.replace(":latest", "")}</h1>
+        {model.includes("/") && <p className="text-sub-mono" style={{ overflowWrap: "anywhere" }}>{model}</p>}
         <p className="text-sub-mono" suppressHydrationWarning>Latest Run: {displayDate(absoluteLatest)}</p>
       </div>
     </header>
 
+    {!latest && <div className="data-warning" role="status"><strong>No matching run</strong><span>{activeRunId ? "The selected run is outside this model or deployment history." : "No recorded runs match these engine, hardware and load filters."} Select a deployment block or return to the overview.</span></div>}
+    {history.length >= 500 && <p className="text-sub" role="status">Recent history is limited to 500 rows. A selected older run can also appear.</p>}
     {latest && (isLegacyOrNonComparable(latest) || (latest.error_count ?? 0) > 0 || latest.hw_detection_status === "remote_unreachable") && (
       <div className="data-warning" role="status">
         <strong>{(latest.error_count ?? 0) > 0 ? "PARTIAL RUN" : "DATA LIMITATION"}</strong>
@@ -350,11 +255,12 @@ export function ModelDetail({
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: "24px" }}>
         <div>
-          <p className="text-eyebrow" style={{ marginBottom: "8px" }}>Recent Stable Snapshot</p>
+          <p className="text-eyebrow" style={{ marginBottom: "8px" }}>Recorded Run Snapshot</p>
           <h2 className="text-heading">Performance Benchmark</h2>
+          {latest && <p className="text-sub-mono">{categoryLabel(latest.prompt_category)} · {displayDate(latest)}</p>}
         </div>
         <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "12px" }}>
-          <span className="tag">{engineLabel(latest?.framework)} Backend</span>
+          <span className="tag">{engineLabel(latest?.framework ?? targetEngine)} Backend</span>
           {latest && latest.aggregate_timestamp_range && (
             <div style={{ textAlign: "right", display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "6px" }}>
               {latest.is_stale && (
@@ -379,7 +285,7 @@ export function ModelDetail({
                 <span style={{ fontSize: "0.6rem", color: "var(--text-tertiary)", fontWeight: 400, marginLeft: "4px" }}>(agg)</span>
               )}
             </span>
-            <strong className="text-mono-data text-display-md" style={{ color: "var(--text-primary)" }}>{formatMetric(latest?.median_decode_tps || latest?.aggregate_output_tps, "tok/s")}</strong>
+            <strong className="text-mono-data text-display-md" style={{ color: "var(--text-primary)" }}>{formatMetric(latest?.median_decode_tps ?? latest?.aggregate_output_tps, "tok/s")}</strong>
             <span className="metric-help">{latest?.median_decode_tps != null ? "Per-request median" : latest?.aggregate_output_tps != null ? "Aggregate throughput" : "Not recorded"}</span>
           </div>
         </div>
@@ -407,7 +313,7 @@ export function ModelDetail({
           <div className="panel-body metric-block" style={{ height: "100%", justifyContent: "space-between" }}>
             <span className="text-eyebrow">LOADED MEMORY</span>
             <strong className="text-mono-data text-display-md">
-              {latest?.peak_gpu_mem_mb ? `${(latest.peak_gpu_mem_mb / 1024).toFixed(1)} GB` : formatMetric(latest?.median_model_memory_mb, "MB")}
+              {latest?.peak_gpu_mem_mb != null ? `${(latest.peak_gpu_mem_mb / 1024).toFixed(1)} GB` : formatMetric(latest?.median_model_memory_mb, "MB")}
             </strong>
           </div>
         </div>
@@ -415,7 +321,7 @@ export function ModelDetail({
           <div className="panel">
             <div className="panel-body metric-block" style={{ height: "100%", justifyContent: "space-between" }}>
               <span className="text-eyebrow">PEAK GPU MEM</span>
-              <strong className="text-mono-data text-display-md">{latest.peak_gpu_mem_mb ? formatMetric(latest.peak_gpu_mem_mb / 1024, "GB") : "—"}</strong>
+              <strong className="text-mono-data text-display-md">{latest.peak_gpu_mem_mb != null ? formatMetric(latest.peak_gpu_mem_mb / 1024, "GB") : "—"}</strong>
               {latest.gpu_failed_count ? <span className="text-sub-mono" style={{ color: "var(--accent-red)" }}>[!] failed to read GPU</span> : null}
             </div>
           </div>
@@ -424,7 +330,7 @@ export function ModelDetail({
 
       {latest && (
         <div className="panel data-context" aria-label="Run conditions">
-          <div><span className="text-eyebrow">Quality Score</span><strong className="text-mono-data">{latest.quality_score != null ? `${Math.round(latest.quality_score * 100)}%` : "No score"}</strong><small className="text-sub-mono">{latest.quality_total_count != null ? `${latest.quality_success_count ?? 0}/${latest.quality_total_count} tasks succeeded · ${Math.round((latest.quality_success_rate ?? 0) * 100)}% coverage${latest.quality_run_id && latest.quality_run_id !== latest.id ? ` · quality from run ${latest.quality_run_id.slice(0, 8)}` : ""}` : "No quality evaluation recorded"}</small></div>
+          <div><span className="text-eyebrow">Quality Score</span><strong className="text-mono-data">{latest.quality_score != null ? `${Math.round(latest.quality_score * 100)}%` : "No score"}</strong><small className="text-sub-mono">{latest.quality_total_count != null ? `${latest.quality_success_count ?? "—"}/${latest.quality_total_count} tasks succeeded${latest.quality_run_id && latest.quality_run_id !== latest.id ? ` · quality from run ${latest.quality_run_id.slice(0, 8)}` : ""}` : "No quality evaluation recorded"}</small></div>
           <div><span className="text-eyebrow">Request Reliability</span><strong className="text-mono-data">{errorRate(latest) != null ? `${(errorRate(latest)! * 100).toFixed(1)}% errors` : "Unknown"}</strong><small className="text-sub-mono">{latest.quality_total_count ? `${latest.quality_total_count} requests` : `${latest.num_runs ?? 0} runs`} · {latest.concurrency ?? 1} concurrent · {latest.error_count ?? 0} failed{(latest.generation_timeout_count ?? 0) > 0 ? ` · ${latest.generation_timeout_count} timed out (${((generationTimeoutRate(latest) ?? 0) * 100).toFixed(1)}%)` : ""}</small></div>
           <div><span className="text-eyebrow">Token Provenance</span><strong className="text-mono-data">{tokenSourceLabel(latest.output_token_source)}</strong><small className="text-sub-mono">{latest.prompt_tokens ?? "—"} prompt / {latest.output_tokens ?? "—"} output tokens</small></div>
           <div>
@@ -445,26 +351,26 @@ export function ModelDetail({
           <div className="panel">
             <div className="panel-body metric-block" style={{ height: "100%", justifyContent: "space-between" }}>
               <span className="text-eyebrow" style={{ color: "var(--text-secondary)" }}>Avg KV-Cache</span>
-              <strong className="text-mono-data text-display-md">{latest.avg_kv_cache_pct ? formatMetric(latest.avg_kv_cache_pct, "%") : "—"}</strong>
+              <strong className="text-mono-data text-display-md">{latest.avg_kv_cache_pct != null ? formatMetric(latest.avg_kv_cache_pct, "%") : "—"}</strong>
               {(latest.kv_failed_count || latest.itl_failed_count || latest.vllm_failed_count) ? <span className="text-sub-mono" style={{ color: "var(--accent-red)" }}>[!] failed</span> : null}
             </div>
           </div>
         ) : null}
         <div className="panel">
           <div className="panel-body metric-block" style={{ height: "100%", justifyContent: "space-between" }}>
-            <span className="text-eyebrow" style={{ color: "var(--text-secondary)" }}>Prompt Tokens</span>
+            <span className="text-eyebrow" style={{ color: "var(--text-secondary)" }}>Prompt Tokens (median)</span>
             <strong className="text-mono-data text-display-md">{latest?.prompt_tokens ?? "—"}</strong>
           </div>
         </div>
         <div className="panel">
           <div className="panel-body metric-block" style={{ height: "100%", justifyContent: "space-between" }}>
-            <span className="text-eyebrow" style={{ color: "var(--text-secondary)" }}>Output Tokens</span>
+            <span className="text-eyebrow" style={{ color: "var(--text-secondary)" }}>Output Tokens (median)</span>
             <strong className="text-mono-data text-display-md">{latest?.output_tokens ?? "—"}</strong>
           </div>
         </div>
         <div className="panel">
           <div className="panel-body metric-block" style={{ height: "100%", justifyContent: "space-between" }}>
-            <span className="text-eyebrow" style={{ color: "var(--text-secondary)" }}>Total Run Time</span>
+            <span className="text-eyebrow" style={{ color: "var(--text-secondary)" }}>Median E2E Latency</span>
             <strong className="text-mono-data text-display-md">{formatMetric(latest?.median_e2e_s, "s")}</strong>
           </div>
         </div>
@@ -485,7 +391,7 @@ export function ModelDetail({
             <div className="panel">
               <div className="panel-body metric-block" style={{ height: "100%", justifyContent: "space-between" }}>
                 <span className="text-eyebrow" style={{ color: "var(--text-secondary)" }}>Peak GPU Memory</span>
-                <strong className="text-mono-data text-display-md">{latest.peak_gpu_mem_mb ? formatMetric(latest.peak_gpu_mem_mb / 1024, "GB") : "—"}</strong>
+                <strong className="text-mono-data text-display-md">{latest.peak_gpu_mem_mb != null ? formatMetric(latest.peak_gpu_mem_mb / 1024, "GB") : "—"}</strong>
                 <span className="text-sub-mono" style={{ color: latest.gpu_failed_count ? "var(--accent-red)" : "var(--text-secondary)" }}>{latest.gpu_failed_count ? `[!] ${latest.gpu_failed_count}/${latest.sample_count} failed` : "all samples captured"}</span>
               </div>
             </div>
@@ -494,193 +400,53 @@ export function ModelDetail({
       ) : null}
     </div>
 
-    {hasCrossDeployment && (
-      <section style={{ marginTop: "64px" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: "24px", flexWrap: "wrap", gap: "16px" }}>
-          <div>
-            <p className="text-eyebrow" style={{ marginBottom: "8px" }}>Cross-Hardware Evaluation</p>
-            <h2 className="text-heading">Cross-Hardware & Engine Comparison</h2>
-            <p className="text-sub-mono" style={{ margin: "4px 0 0", fontSize: "0.75rem", color: "var(--text-secondary)" }}>
-              Click any deployment row to switch active model telemetry, latency gauges, and execution logs
-            </p>
-          </div>
-          {availableCrossConcurrencies.length > 1 && (
-            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-              <span className="text-sub-mono" style={{ fontSize: "0.75rem", color: "var(--text-tertiary)" }}>LOAD TIER:</span>
-              <div style={{ display: "flex", gap: "4px", background: "rgba(255,255,255,0.04)", padding: "3px", borderRadius: "6px", border: "1px solid var(--border-subtle)" }}>
-                <button
-                  type="button"
-                  onClick={() => setCrossHwConcurrency("all")}
-                  style={{
-                    padding: "4px 10px",
-                    fontSize: "0.75rem",
-                    fontWeight: 600,
-                    borderRadius: "4px",
-                    border: "none",
-                    cursor: "pointer",
-                    background: crossHwConcurrency === "all" ? "var(--accent-blue, #2979ff)" : "transparent",
-                    color: crossHwConcurrency === "all" ? "#fff" : "var(--text-secondary)",
-                    transition: "all 0.15s ease",
-                  }}
-                >
-                  All
-                </button>
-                {availableCrossConcurrencies.map((c) => (
-                  <button
-                    key={c}
-                    type="button"
-                    onClick={() => setCrossHwConcurrency(c)}
-                    style={{
-                      padding: "4px 10px",
-                      fontSize: "0.75rem",
-                      fontWeight: 600,
-                      borderRadius: "4px",
-                      border: "none",
-                      cursor: "pointer",
-                      background: crossHwConcurrency === c ? "var(--accent-blue, #2979ff)" : "transparent",
-                      color: crossHwConcurrency === c ? "#fff" : "var(--text-secondary)",
-                      transition: "all 0.15s ease",
-                    }}
-                  >
-                    C={c}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-        <div className="panel" style={{ overflowX: "auto", width: "100%", maxWidth: "100%" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: "500px" }}>
-            <thead>
-              <tr style={{ background: "var(--bg-panel)" }}>
-                <th style={{ padding: "12px 16px", borderBottom: "1px solid var(--border-strong)", textAlign: "left" }}><span className="text-eyebrow">DEPLOYMENT</span></th>
-                <th style={{ padding: "12px 16px", borderBottom: "1px solid var(--border-strong)", textAlign: "left" }}><span className="text-eyebrow">LOAD</span></th>
-                <th style={{ padding: "12px 16px", borderBottom: "1px solid var(--border-strong)", textAlign: "left" }}><span className="text-eyebrow">DECODE SPEED</span></th>
-                <th style={{ padding: "12px 16px", borderBottom: "1px solid var(--border-strong)", textAlign: "left" }}><span className="text-eyebrow">TTFT</span></th>
-              </tr>
-            </thead>
+    {deployments.length > 0 && (
+      <section style={{ marginTop: "64px" }} aria-labelledby="deployment-comparison-heading">
+        <h2 id="deployment-comparison-heading" className="text-heading">Cross-Hardware & Engine Comparison</h2>
+        <div className="panel deployment-comparison__scroll" role="region" aria-label="Deployment options" tabIndex={0}>
+          <table className="deployment-comparison">
+            <caption className="sr-only">Switch between engine, hardware and concurrency deployments. Metrics come from each deployment’s latest recorded run.</caption>
+            <colgroup><col style={{ width: "48%" }} /><col style={{ width: "14%" }} /><col style={{ width: "22%" }} /><col style={{ width: "16%" }} /></colgroup>
+            <thead><tr><th scope="col">Deployment</th><th scope="col">Load</th><th scope="col">Decode speed</th><th scope="col">TTFT</th></tr></thead>
             <tbody>
-              {filteredDeploymentKeys.map((key) => {
-                const [engine, hardware, quantization, contextLen, runConcurrency] = JSON.parse(key) as [string, string, string, number | string, number];
+          {deployments.map(({ key, recorded }) => {
+            const deploymentEngine = recorded.framework || "unknown";
+            const deploymentHardware = hardwareLabel(recorded);
+            const isActive = Boolean(latest && modelDeploymentKey(latest) === key);
+            const params = new URLSearchParams({ engine: deploymentEngine, hw: deploymentHardware, c: String(recorded.concurrency ?? 1) });
+            if (recorded.id) params.set("run", recorded.id);
+            return <tr key={key} className="deployment-comparison__item" aria-current={isActive ? "page" : undefined}>
+              <td>
+                <div className="deployment-comparison__identity">
+                  <span className={`tag ${engineTagClass(deploymentEngine)}`}>{engineLabel(deploymentEngine)}</span>
+                  {isActive ? <span className="deployment-comparison__current">Active view</span> : recorded.id ? (
+                    <Link className="deployment-comparison__link" href={`/models/${encodeURIComponent(model)}?${params.toString()}`} aria-label={`Switch to ${engineLabel(deploymentEngine)} on ${deploymentHardware} at C=${recorded.concurrency ?? 1}`}>Click to switch →</Link>
+                  ) : <span className="text-sub-mono">Saved deployment</span>}
+                </div>
+                <span className="deployment-comparison__hardware" title={deploymentHardware}>{deploymentHardware}</span>
+              </td>
+              <td><span className="tag deployment-comparison__load" data-concurrent={(recorded.concurrency ?? 1) > 1}>{`C=${recorded.concurrency ?? 1}`}</span></td>
+              <td className="deployment-comparison__metric" title={`Latest recorded run: ${displayDate(recorded)}`}>
+                {formatMetric(recorded.median_decode_tps ?? recorded.aggregate_output_tps, "tok/s")}
+                {recorded.median_decode_tps == null && recorded.aggregate_output_tps != null && <small>Aggregate</small>}
+              </td>
+              <td className="deployment-comparison__metric" title="Median time to first token"><strong>{formatMetric(recorded.median_ttft_s, "s")}</strong></td>
+            </tr>;
 
-                const matchesDeployment = (run: BenchmarkRun) =>
-                  (run.framework || "unknown") === engine &&
-                  hardwareLabel(run) === hardware &&
-                  (run.quantization || "unknown") === quantization &&
-                  (run.concurrency ?? 1) === runConcurrency;
-
-                const depRuns = allSpeedRuns.filter(matchesDeployment);
-                // Find the highest throughput run for this physical deployment at this concurrency
-                const depLatest = [...depRuns].sort((a, b) => (b.aggregate_output_tps || b.median_decode_tps || 0) - (a.aggregate_output_tps || a.median_decode_tps || 0))[0];
-                
-                // Highlight the active deployment context
-                const isActive =
-                  engine.toLowerCase() === targetEngine.toLowerCase() &&
-                  hardware.toLowerCase() === targetHardware.toLowerCase() &&
-                  (targetConcurrency === undefined ? (runConcurrency === (latest?.concurrency ?? 1)) : runConcurrency === targetConcurrency);
-
-                return (
-                  <tr
-                    key={key}
-                    onClick={() => handleSelectDeployment(engine, hardware, runConcurrency)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter" || event.key === " ") {
-                        event.preventDefault();
-                        handleSelectDeployment(engine, hardware, runConcurrency);
-                      }
-                    }}
-                    tabIndex={0}
-                    role="button"
-                    aria-label={`Switch to ${engineLabel(engine)} on ${hardware} at concurrency ${runConcurrency}`}
-                    className="interactive-row"
-                    title={`Click to switch model view to ${engineLabel(engine)} on ${hardware} (C=${runConcurrency})`}
-                    style={{
-                      cursor: "pointer",
-                      background: isActive ? "rgba(41,121,255,0.08)" : undefined,
-                      borderLeft: isActive ? "3px solid var(--accent-emerald, #5fe0a0)" : "3px solid transparent",
-                      transition: "all 0.15s ease",
-                    }}
-                  >
-                    <td style={{ padding: "16px", borderBottom: "1px solid var(--border-subtle)" }}>
-                      <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                          <span className={`tag ${engineTagClass(engine)}`} style={{ alignSelf: "flex-start" }}>{engineLabel(engine)}</span>
-                          {isActive ? (
-                            <span className="text-eyebrow" style={{ color: "var(--accent-emerald)", fontWeight: 700, display: "flex", alignItems: "center", gap: "4px" }}>
-                              <span style={{ fontSize: "0.65rem" }}>●</span> ACTIVE VIEW
-                            </span>
-                          ) : (
-                            <span className="text-sub-mono" style={{ fontSize: "0.7rem", color: "var(--accent-blue)", opacity: 0.8 }}>
-                              Click to switch →
-                            </span>
-                          )}
-                        </div>
-                        <span className="text-sub-mono" style={{ fontSize: "0.75rem" }}>{hardware} · {quantization} · ctx {contextLen}</span>
-                      </div>
-                    </td>
-                    <td style={{ padding: "16px", borderBottom: "1px solid var(--border-subtle)" }}>
-                      <span className="tag" style={{ background: runConcurrency > 1 ? "rgba(41,121,255,0.12)" : "rgba(255,255,255,0.06)", color: runConcurrency > 1 ? "var(--accent-blue)" : "var(--text-secondary)", fontWeight: 700 }}>
-                        C={runConcurrency}
-                      </span>
-                    </td>
-                    <td className="font-mono" style={{ padding: "16px", borderBottom: "1px solid var(--border-subtle)" }}>
-                      {formatMetric(depLatest?.median_decode_tps || depLatest?.aggregate_output_tps, "tok/s")}
-                    </td>
-                    <td className="font-mono" style={{ padding: "16px", borderBottom: "1px solid var(--border-subtle)" }}>
-                      <strong>
-                        {formatMetric(depLatest?.median_ttft_s, "s")}
-                      </strong>
-                    </td>
-                  </tr>
-                );
-              })}
+          })}
             </tbody>
           </table>
         </div>
       </section>
     )}
 
-    {/* Golden Recipe Callout — only when a verified production recipe exists for this model */}
-    {recipeError && <div className="data-warning" role="status"><AlertTriangle size={15} aria-hidden="true" /><span>{recipeError}</span></div>}
-    {goldenRecipe && (
-      <div style={{
-        margin: "32px 0",
-        background: "linear-gradient(135deg, rgba(95,224,160,0.06) 0%, rgba(41,121,255,0.04) 100%)",
-        border: "1px solid rgba(95,224,160,0.25)",
-        borderRadius: "var(--radius-md)",
-        padding: "20px 24px",
-        display: "flex",
-        justifyContent: "space-between",
-        alignItems: "center",
-        flexWrap: "wrap",
-        gap: "16px",
-      }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-            <Trophy size={16} aria-hidden="true" />
-            <span className="text-eyebrow" style={{ color: "var(--accent-emerald)" }}>GOLDEN PRODUCTION RECIPE VERIFIED</span>
-            <span className="tag" style={{ background: "var(--accent-emerald-dim)", color: "var(--accent-emerald)", borderColor: "rgba(95,224,160,0.3)" }}>
-              {goldenRecipe.sla_verdict.fit_status.toUpperCase()}
-            </span>
-          </div>
-          <p className="text-sub" style={{ margin: 0, fontSize: "0.82rem" }}>
-            <strong>{goldenRecipe.prompt_config.system_template_id.replace(/_/g, " ").toUpperCase()}</strong> prompt · Top-{goldenRecipe.rag_config.top_k} RAG{goldenRecipe.rag_config.use_reranker ? " + reranker" : ""} · {goldenRecipe.infra_config.engine.toUpperCase()} · {goldenRecipe.infra_config.max_context_len} ctx · {(goldenRecipe.sla_verdict.quality_score * 100).toFixed(1)}% quality at C=10
-          </p>
-        </div>
-        <Link
-          href="/#recipe-studio"
-          className="settings-btn-primary"
-          style={{ padding: "9px 18px", fontSize: "0.82rem", textDecoration: "none" }}
-        >
-          Open in Recipe Studio →
-        </Link>
-      </div>
-    )}
-
     <div style={{ marginTop: "32px" }}>
       <div className="panel">
         <div className="panel-header"><span className="text-eyebrow" style={{ color: "var(--text-primary)", fontWeight: 600 }}>Historical Speed Trends</span></div>
-        <div className="panel-body"><HistoryChart points={speedRuns} /></div>
+        <div className="panel-body">
+          <p className="text-sub-mono">All {chartRuns.length} recorded runs for this deployment at C={targetConcurrency}. Prompts, strategies and settings may vary.</p>
+          <HistoryChart points={chartRuns} />
+        </div>
       </div>
     </div>
 
@@ -692,174 +458,88 @@ export function ModelDetail({
           <span className="text-sub-mono">[{sourceRuns.length} Runs Recorded]</span>
         </div>
       </div>
-      <div className="panel" style={{ overflowX: "auto", width: "100%", maxWidth: "100%" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", minWidth: "1100px" }}>
+      <p className="text-sub execution-log__hint" id="execution-log-help">Open a row for the full result. Expand Run settings for configuration details. Scroll horizontally to see all metrics on smaller screens.</p>
+      <div className="panel execution-log__scroll" role="region" aria-label="Execution log" aria-describedby="execution-log-help" tabIndex={0}>
+        <table className="execution-log">
+          <caption className="sr-only">Recorded benchmark runs for this model and deployment</caption>
+          <colgroup>
+            <col style={{ width: "28%" }} /><col style={{ width: "17%" }} /><col style={{ width: "11%" }} />
+            <col style={{ width: "10%" }} /><col style={{ width: "10%" }} /><col style={{ width: "10%" }} /><col style={{ width: "14%" }} />
+          </colgroup>
           <thead>
-            <tr style={{ background: "var(--bg-panel)" }}>
-              <th style={{ padding: "12px 16px", borderBottom: "1px solid var(--border-strong)", textAlign: "left" }}><span className="text-eyebrow">Timestamp</span></th>
-              <th style={{ padding: "12px 16px", borderBottom: "1px solid var(--border-strong)", textAlign: "left" }}><span className="text-eyebrow">Concurrency</span></th>
-              <th style={{ padding: "12px 16px", borderBottom: "1px solid var(--border-strong)", textAlign: "left" }}><span className="text-eyebrow">Experiment</span></th>
-              <th style={{ padding: "12px 16px", borderBottom: "1px solid var(--border-strong)", textAlign: "left" }}><span className="text-eyebrow">Hardware</span></th>
-              <th style={{ padding: "12px 16px", borderBottom: "1px solid var(--border-strong)", textAlign: "left" }}><span className="text-eyebrow">Engine</span></th>
-              <th style={{ padding: "12px 16px", borderBottom: "1px solid var(--border-strong)", textAlign: "left" }}><span className="text-eyebrow">Benchmark</span></th>
-              <th style={{ padding: "12px 16px", borderBottom: "1px solid var(--border-strong)", textAlign: "left" }}><span className="text-eyebrow">Tokens (P/O)</span></th>
-              <th style={{ padding: "12px 16px", borderBottom: "1px solid var(--border-strong)", textAlign: "left" }}><span className="text-eyebrow">TTFT (Med / p95)</span></th>
-              <th style={{ padding: "12px 16px", borderBottom: "1px solid var(--border-strong)", textAlign: "left" }}><span className="text-eyebrow">Decode Speed</span></th>
-              <th style={{ padding: "12px 16px", borderBottom: "1px solid var(--border-strong)", textAlign: "left" }}><span className="text-eyebrow">GPU Memory</span></th>
-              <th style={{ padding: "12px 16px", borderBottom: "1px solid var(--border-strong)", textAlign: "left" }}><span className="text-eyebrow">Quality & Errors</span></th>
+            <tr>
+              <th scope="col">Experiment / recorded at</th>
+              <th scope="col">Deployment / benchmark</th>
+              <th scope="col" className="execution-log__number">Tokens<small>Prompt / output</small></th>
+              <th scope="col" className="execution-log__number">TTFT<small>Median / p95</small></th>
+              <th scope="col" className="execution-log__number">Decode<small>tok/s · median</small></th>
+              <th scope="col" className="execution-log__number">Memory<small>Peak / loaded</small></th>
+              <th scope="col">Quality / errors</th>
             </tr>
           </thead>
           <tbody>
             {sourceRuns.map((run, index) => {
-              const memDisplay = run.peak_gpu_mem_mb
+              const memDisplay = run.peak_gpu_mem_mb != null
                 ? `${(run.peak_gpu_mem_mb / 1024).toFixed(1)} GB`
-                : formatMetric(run.median_model_memory_mb, " MB");
-
+                : formatMetric(run.median_model_memory_mb, "MB");
+              const cells = <>
+                <td>{renderExperimentCell(run)}</td>
+                <td>
+                  <div className="execution-log__deployment"><span className={`tag ${engineTagClass(run.framework)}`}>{engineLabel(run.framework)}</span><span className="execution-log__load">C={run.concurrency ?? 1}</span></div>
+                  <span className="execution-log__hardware" title={hardwareLabel(run)}>{hardwareLabel(run)}</span>
+                  <span className="execution-log__secondary execution-log__category">{categoryLabel(run.prompt_category)}{(run.prompt_category === "rag-multi" || run.prompt_category === "mixed") && <span className="tag" title="Legacy RAG prompt format; rerun with a registered suite for qualification">Provisional</span>}</span>
+                </td>
+                <td className="execution-log__number"><span className="execution-log__value">{run.prompt_tokens ?? "—"} / {run.output_tokens ?? "—"}</span></td>
+                <td className="execution-log__number">
+                  <span className="execution-log__value">{formatMetric(run.median_ttft_s, "s")}</span>
+                  {run.p95_ttft_s != null && <span className="execution-log__secondary">p95 {formatMetric(run.p95_ttft_s, "s")}</span>}
+                </td>
+                <td className="execution-log__number"><span className="execution-log__value">{formatMetric(run.median_decode_tps, "")}</span></td>
+                <td className="execution-log__number"><span className="execution-log__value">{memDisplay}</span><span className="execution-log__secondary">{run.peak_gpu_mem_mb != null ? "Peak GPU" : run.median_model_memory_mb != null ? "Loaded model" : "Not recorded"}</span></td>
+                <td className="execution-log__quality">
+                    {run.quality_score != null ? (
+                      <QualityDrilldown
+                        runId={run.id!}
+                        canViewTraces={canViewTraces}
+                        score={run.quality_score}
+                        successCount={run.quality_success_count ?? "—"}
+                        totalCount={run.quality_total_count ?? "—"}
+                        errorRateStr={errorRate(run) != null ? `${(errorRate(run)! * 100).toFixed(1)}% errors` : "error rate unknown"}
+                        taskScores={run.task_scores ?? {}}
+                      />
+                    ) : (
+                      <>
+                        No quality<br />
+                        <span className="text-sub">
+                          {errorRate(run) != null ? `${(errorRate(run)! * 100).toFixed(1)}% errors` : "error rate unknown"}
+                        </span>
+                      </>
+                    )}
+                    {run.decision_mode && (
+                      <span className="tag" title={`decision-mode: ${run.decision_mode.runs}x runs, range ${(run.decision_mode.range * 100).toFixed(1)}pp`}>
+                        {run.decision_mode.runs}× {((run.decision_mode.min_success_rate * 100).toFixed(1))}–{((run.decision_mode.max_success_rate * 100).toFixed(1))}%
+                      </span>
+                    )}
+                    {run.quality_buckets && (
+                      <div className="bucket-row" style={{ display: "flex", flexDirection: "column", gap: "2px", marginTop: "6px" }}>
+                        {Object.entries(run.quality_buckets).map(([key, b]) => (
+                          <span key={key} className="tag" title={`${bucketLabel(key)}: ${b.success_count ?? 0}/${b.total_count ?? "?"} correct`}>
+                            {bucketLabel(key)} {b.total_count != null ? `${b.success_count ?? 0}/${b.total_count} (${((b.success_rate ?? (b.total_count ? (b.success_count ?? 0) / b.total_count : 0)) * 100).toFixed(1)}%)` : "—"}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                </td>
+              </>;
               return run.id ? (
-                <ClickableRow key={`${runDate(run)}-${index}`} href={`/runs/${run.id}`} label={`Open run from ${displayDate(run)}`}>
-                  <td style={{ padding: "16px", borderBottom: "1px solid var(--border-subtle)", fontFamily: "var(--font-mono)", fontSize: "0.75rem" }}>
-                    {displayDate(run)}<br />
-                    <span className="text-sub">[{run.num_runs ? `MEDIAN OF ${run.num_runs}` : "RAW RUN"}]</span>
-                  </td>
-                  <td style={{ padding: "16px", borderBottom: "1px solid var(--border-subtle)" }}>
-                    <span className="tag" style={{ background: "rgba(255,255,255,0.06)", color: "var(--text-primary)", fontWeight: 700 }}>
-                      C={run.concurrency ?? 1}
-                    </span>
-                  </td>
-                  <td style={{ padding: "16px", borderBottom: "1px solid var(--border-subtle)" }}>
-                    {renderExperimentCell(run)}
-                  </td>
-                  <td style={{ padding: "16px", borderBottom: "1px solid var(--border-subtle)" }}>
-                    <span className="tag" title={`Status: ${run.hw_detection_status}\nPlatform: ${run.hw_platform}\nCPU: ${run.hw_cpu_model} (${run.hw_cpu_physical_cores}P/${run.hw_cpu_logical_cores}L)\nRAM: ${run.hw_ram_gb}GB\nGPU: ${run.hw_gpu_name} (${run.hw_gpu_memory_mb}MB, ${run.hw_gpu_count}x)\nAWS: ${run.hw_aws_instance_type}`}>
-                      {run.hw_gpu_name || (run.hw_cpu_model ? run.hw_cpu_model.split(' ')[0] + ' CPU' : run.hw_platform || "Unknown")}
-                    </span>
-                  </td>
-                  <td style={{ padding: "16px", borderBottom: "1px solid var(--border-subtle)" }}>
-                    <span className={`tag ${engineTagClass(run.framework)}`}>{engineLabel(run.framework)}</span>
-                  </td>
-                  <td className="font-mono" style={{ padding: "16px", borderBottom: "1px solid var(--border-subtle)" }}>{categoryLabel(run.prompt_category)}{(run.prompt_category === "rag-multi" || run.prompt_category === "mixed") && <span className="tag" style={{ background: "var(--accent-rose)", color: "var(--bg-panel)", fontWeight: 600, marginLeft: "8px" }} title="Legacy RAG prompt format; rerun with a registered suite for qualification">PROVISIONAL</span>}</td>
-                  <td className="font-mono" style={{ padding: "16px", borderBottom: "1px solid var(--border-subtle)" }}>{run.prompt_tokens ?? "—"} / {run.output_tokens ?? "—"}</td>
-                  <td className="font-mono" style={{ padding: "16px", borderBottom: "1px solid var(--border-subtle)" }}>
-                    <strong>
-                      {formatMetric(run.median_ttft_s, "s")}
-                    </strong>
-                    {run.p95_ttft_s != null && (
-                      <span className="text-sub-mono" style={{ display: "block", fontSize: "0.68rem", color: "var(--text-tertiary)" }}>
-                        p95: {formatMetric(run.p95_ttft_s, "s")}
-                      </span>
-                    )}
-                  </td>
-                  <td className="font-mono" style={{ padding: "16px", borderBottom: "1px solid var(--border-subtle)" }}>{formatMetric(run.median_decode_tps, "tok/s")}</td>
-                  <td className="font-mono" style={{ padding: "16px", borderBottom: "1px solid var(--border-subtle)" }}>{memDisplay}</td>
-                  <td className="font-mono" style={{ padding: "16px", borderBottom: "1px solid var(--border-subtle)" }}>
-                    {run.quality_score != null ? (
-                      <QualityDrilldown
-                        runId={run.id!}
-                        score={run.quality_score}
-                        successCount={run.quality_success_count ?? 0}
-                        totalCount={run.quality_total_count ?? "—"}
-                        errorRateStr={errorRate(run) != null ? `${(errorRate(run)! * 100).toFixed(1)}% errors` : "error rate unknown"}
-                        taskScores={run.task_scores ?? {}}
-                      />
-                    ) : (
-                      <>
-                        No quality<br />
-                        <span className="text-sub">
-                          {errorRate(run) != null ? `${(errorRate(run)! * 100).toFixed(1)}% errors` : "error rate unknown"}
-                        </span>
-                      </>
-                    )}
-                    {run.decision_mode && (
-                      <span className="tag" title={`decision-mode: ${run.decision_mode.runs}x runs, range ${(run.decision_mode.range * 100).toFixed(1)}pp`}>
-                        3× {((run.decision_mode.min_success_rate * 100).toFixed(1))}–{((run.decision_mode.max_success_rate * 100).toFixed(1))}%
-                      </span>
-                    )}
-                    {run.quality_buckets && (
-                      <div className="bucket-row" style={{ display: "flex", flexDirection: "column", gap: "2px", marginTop: "6px" }}>
-                        {Object.entries(run.quality_buckets).map(([key, b]) => (
-                          <span key={key} className="tag" title={`${bucketLabel(key)}: ${b.success_count ?? 0}/${b.total_count ?? "?"} correct`}>
-                            {bucketLabel(key)} {b.total_count != null ? `${b.success_count ?? 0}/${b.total_count} (${((b.success_rate ?? (b.total_count ? (b.success_count ?? 0) / b.total_count : 0)) * 100).toFixed(1)}%)` : "—"}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </td>
-                </ClickableRow>
+                <ClickableRow key={`${runDate(run)}-${index}`} href={`/runs/${run.id}`} label={`Open run from ${displayDate(run)}`}>{cells}</ClickableRow>
               ) : (
-                <tr key={`${runDate(run)}-${index}`} className="interactive-row">
-                  <td style={{ padding: "16px", borderBottom: "1px solid var(--border-subtle)", fontFamily: "var(--font-mono)", fontSize: "0.75rem" }}>
-                    {displayDate(run)}<br />
-                    <span className="text-sub">[{run.num_runs ? `MEDIAN OF ${run.num_runs}` : "RAW RUN"}]</span>
-                  </td>
-                  <td style={{ padding: "16px", borderBottom: "1px solid var(--border-subtle)" }}>
-                    <span className="tag" style={{ background: "rgba(255,255,255,0.06)", color: "var(--text-primary)", fontWeight: 700 }}>
-                      C={run.concurrency ?? 1}
-                    </span>
-                  </td>
-                  <td style={{ padding: "16px", borderBottom: "1px solid var(--border-subtle)" }}>
-                    {renderExperimentCell(run)}
-                  </td>
-                  <td style={{ padding: "16px", borderBottom: "1px solid var(--border-subtle)" }}>
-                    <span className="tag" title={`Status: ${run.hw_detection_status}\nPlatform: ${run.hw_platform}\nCPU: ${run.hw_cpu_model} (${run.hw_cpu_physical_cores}P/${run.hw_cpu_logical_cores}L)\nRAM: ${run.hw_ram_gb}GB\nGPU: ${run.hw_gpu_name} (${run.hw_gpu_memory_mb}MB, ${run.hw_gpu_count}x)\nAWS: ${run.hw_aws_instance_type}`}>
-                      {run.hw_gpu_name || (run.hw_cpu_model ? run.hw_cpu_model.split(' ')[0] + ' CPU' : run.hw_platform || "Unknown")}
-                    </span>
-                  </td>
-                  <td style={{ padding: "16px", borderBottom: "1px solid var(--border-subtle)" }}>
-                    <span className={`tag ${engineTagClass(run.framework)}`}>{engineLabel(run.framework)}</span>
-                  </td>
-                  <td className="font-mono" style={{ padding: "16px", borderBottom: "1px solid var(--border-subtle)" }}>{categoryLabel(run.prompt_category)}{(run.prompt_category === "rag-multi" || run.prompt_category === "mixed") && <span className="tag" style={{ background: "var(--accent-rose)", color: "var(--bg-panel)", fontWeight: 600, marginLeft: "8px" }} title="Legacy RAG prompt format; rerun with a registered suite for qualification">PROVISIONAL</span>}</td>
-                  <td className="font-mono" style={{ padding: "16px", borderBottom: "1px solid var(--border-subtle)" }}>{run.prompt_tokens ?? "—"} / {run.output_tokens ?? "—"}</td>
-                  <td className="font-mono" style={{ padding: "16px", borderBottom: "1px solid var(--border-subtle)" }}>
-                    <strong style={{ color: (run.median_ttft_s ?? 0) > 3.0 ? "var(--accent-rose)" : "inherit" }}>
-                      {formatMetric(run.median_ttft_s, "s")}
-                    </strong>
-                    {run.p95_ttft_s != null && (
-                      <span className="text-sub-mono" style={{ display: "block", fontSize: "0.68rem", color: "var(--text-tertiary)" }}>
-                        p95: {formatMetric(run.p95_ttft_s, "s")}
-                      </span>
-                    )}
-                  </td>
-                  <td className="font-mono" style={{ padding: "16px", borderBottom: "1px solid var(--border-subtle)" }}>{formatMetric(run.median_decode_tps, "tok/s")}</td>
-                  <td className="font-mono" style={{ padding: "16px", borderBottom: "1px solid var(--border-subtle)" }}>{memDisplay}</td>
-                  <td className="font-mono" style={{ padding: "16px", borderBottom: "1px solid var(--border-subtle)" }}>
-                    {run.quality_score != null ? (
-                      <QualityDrilldown
-                        runId={run.id!}
-                        score={run.quality_score}
-                        successCount={run.quality_success_count ?? 0}
-                        totalCount={run.quality_total_count ?? "—"}
-                        errorRateStr={errorRate(run) != null ? `${(errorRate(run)! * 100).toFixed(1)}% errors` : "error rate unknown"}
-                        taskScores={run.task_scores ?? {}}
-                      />
-                    ) : (
-                      <>
-                        No quality<br />
-                        <span className="text-sub">
-                          {errorRate(run) != null ? `${(errorRate(run)! * 100).toFixed(1)}% errors` : "error rate unknown"}
-                        </span>
-                      </>
-                    )}
-                    {run.decision_mode && (
-                      <span className="tag" title={`decision-mode: ${run.decision_mode.runs}x runs, range ${(run.decision_mode.range * 100).toFixed(1)}pp`}>
-                        3× {((run.decision_mode.min_success_rate * 100).toFixed(1))}–{((run.decision_mode.max_success_rate * 100).toFixed(1))}%
-                      </span>
-                    )}
-                    {run.quality_buckets && (
-                      <div className="bucket-row" style={{ display: "flex", flexDirection: "column", gap: "2px", marginTop: "6px" }}>
-                        {Object.entries(run.quality_buckets).map(([key, b]) => (
-                          <span key={key} className="tag" title={`${bucketLabel(key)}: ${b.success_count ?? 0}/${b.total_count ?? "?"} correct`}>
-                            {bucketLabel(key)} {b.total_count != null ? `${b.success_count ?? 0}/${b.total_count} (${((b.success_rate ?? (b.total_count ? (b.success_count ?? 0) / b.total_count : 0)) * 100).toFixed(1)}%)` : "—"}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </td>
-                </tr>
+                <tr key={`${runDate(run)}-${index}`}>{cells}</tr>
               );
             })}
           </tbody>
         </table>
-        {!sourceRuns.length && <div className="panel-body" style={{ textAlign: "center" }}><p className="text-sub">No runs recorded for this model yet.</p></div>}
+        {!sourceRuns.length && <div className="panel-body" style={{ textAlign: "center" }}><p className="text-sub">No runs match the selected deployment filters.</p></div>}
       </div>
     </section>
 

@@ -19,7 +19,6 @@ from backend.app.routers import (
     health,
     onboarding,
     prompts,
-    recipes,
     tasks_management,
     strategies,
 )
@@ -91,7 +90,6 @@ def create_app(results_dir: Path | None = None, tasks_path: Path | None = None) 
     app.include_router(auth_session.router, prefix="/api/v1")
     app.include_router(prompts.router, prefix="/api/v1")
     app.include_router(api_keys.router, prefix="/api/v1")
-    app.include_router(recipes.router, prefix="/api/v1")
     app.include_router(tasks_management.router, prefix="/api/v1")
     app.include_router(strategies.router, prefix="/api/v1")
     app.include_router(onboarding.router, prefix="/api/v1")

@@ -558,14 +558,6 @@ export function ScorecardFilters({
               color: "var(--text-primary)",
               transition: "all 0.15s ease",
             }}
-            onFocus={(e) => {
-              e.target.style.borderColor = "var(--accent-lime)";
-              e.target.style.boxShadow = "0 0 8px rgba(224, 255, 2, 0.15)";
-            }}
-            onBlur={(e) => {
-              e.target.style.borderColor = "var(--border-subtle)";
-              e.target.style.boxShadow = "none";
-            }}
           />
           {searchQuery ? (
             <button

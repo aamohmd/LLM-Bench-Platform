@@ -36,7 +36,7 @@ const STEPS: { id: Milestone; title: string; description: string; instructions: 
   {
     id: "runner_key", title: "Prepare runner access",
     description: "Inference runs on your machine or GPU host. The platform manages definitions and receives results.",
-    instructions: ["In API access, create a separate admin key for the runner. Admin scope is needed to fetch task and prompt definitions; visitor keys can only view results.", "Copy the new key immediately and store it securely. Only its hash is saved. A second active admin key marks this step complete.", "On the execution machine, install the matching runner release and its requirements, and start your chosen inference service. Use a model already available there.", "For a hosted platform, use its reachable URL. The model service belongs on the execution machine, not the control-plane server."],
+    instructions: ["In API access, create a separate admin key for the runner. Admin scope is needed to fetch task and prompt definitions; visitor keys can only view results.", "Copy the new key immediately and store it securely. Only its hash is saved. A second active admin key marks this step complete.", "On the dashboard, expand First time? under Run a benchmark. On the inference machine, use its clone command and bash scripts/setup.sh, then save API_KEY in the runner's private .env. Start your chosen inference service with a model already available there.", "Set Platform URL reachable from the runner to your platform's secured address. The model service belongs on the inference machine, not the platform server. Existing vLLM is the recommended mode; temporary startup is optional."],
     href: "/settings?section=api_keys", action: "Create runner access key",
   },
   {

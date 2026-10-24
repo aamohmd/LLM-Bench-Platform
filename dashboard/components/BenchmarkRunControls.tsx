@@ -1,19 +1,16 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { ProductionRecipe, RecipeExportResponse } from "../../lib/benchmarks";
-import { PenIcon, DatabaseIcon, CpuIcon, PackageIcon, CopyIcon, CheckIcon, TerminalIcon } from "./RecipeIcons";
-import { ProductionBlueprintModal } from "./ProductionBlueprintModal";
-import { buildRunnerCommand } from "../../lib/runnerCommand";
-import { useSuiteExecution } from "../useRunnerConfiguration";
+import { PenLine as PenIcon, Cpu as CpuIcon, Copy as CopyIcon, Check as CheckIcon, Terminal as TerminalIcon } from "lucide-react";
+import { buildRunnerCommand, platformUrlError, runtimeSettingsError, type RuntimeSettings } from "../lib/runnerCommand";
+import { useSuiteExecution } from "./useRunnerConfiguration";
 
-interface RecipeStudioControlsProps {
-  initialRecipe?: ProductionRecipe | null;
+interface BenchmarkRunControlsProps {
   availableModels?: Array<{ id: string; label: string }>;
   registryRevision?: number;
 }
 
-type StudioTab = "prompt" | "rag" | "infra";
+type StudioTab = "prompt" | "infra";
 type RegisteredPrompt = {
   id: string;
   name: string;
@@ -32,51 +29,36 @@ type RegisteredStrategy = {
   is_active: boolean;
 };
 
-export function RecipeStudioControls({ initialRecipe, availableModels, registryRevision = 0 }: RecipeStudioControlsProps) {
+export function BenchmarkRunControls({ availableModels, registryRevision = 0 }: BenchmarkRunControlsProps) {
   const [activeTab, setActiveTab] = useState<StudioTab>("prompt");
 
-  // Layer 1: Prompt State
   const [basePrompt, setBasePrompt] = useState<string>("");
-  const [promptStrategy, setPromptStrategy] = useState<string>(
-    initialRecipe?.prompt_config.system_template_id || ""
-  );
-  const [temperature, setTemperature] = useState<number>(initialRecipe?.prompt_config.temperature ?? 0.0);
-  const [isCustomTemp, setIsCustomTemp] = useState<boolean>(
-    ![0.0, 0.1, 0.2, 0.5, 0.7].some((v) => Math.abs(v - (initialRecipe?.prompt_config.temperature ?? 0.0)) < 0.001)
-  );
-  const [responseFormat, setResponseFormat] = useState<string>(
-    initialRecipe?.prompt_config.response_format || "json_object"
-  );
-  const [maxTokens, setMaxTokens] = useState<number>(initialRecipe?.prompt_config.max_output_tokens || 512);
-
-  // Layer 2: RAG State
-  const [chunkSize, setChunkSize] = useState<number>(initialRecipe?.rag_config.chunk_size || 384);
-  const [chunkOverlap, setChunkOverlap] = useState<number>(initialRecipe?.rag_config.chunk_overlap || 50);
-  const [topK, setTopK] = useState<number>(initialRecipe?.rag_config.top_k || 3);
-  const [useReranker, setUseReranker] = useState<boolean>(initialRecipe?.rag_config.use_reranker ?? true);
-  const [injectionFormat, setInjectionFormat] = useState<string>(
-    initialRecipe?.rag_config.injection_format || "xml_tags"
-  );
-
-  // Layer 3: Infra State
-  const [engine, setEngine] = useState<string>(initialRecipe?.infra_config.engine || "vllm");
-  const [selectedModelKey, setSelectedModelKey] = useState<string>(
-    initialRecipe?.infra_config.model || "custom"
-  );
+  const [promptStrategy, setPromptStrategy] = useState<string>("");
+  const [maxTokens, setMaxTokens] = useState<number>(512);
+  const [engine, setEngine] = useState<string>("vllm");
+  const [runtime, setRuntime] = useState({
+    temperature: "0", seed: "42", responseFormat: "text" as "text" | "json", endpoint: "", contextLength: "",
+    launchVllm: false, maxModelLen: "", gpuMemoryUtilization: "", quantization: "", kvCacheDtype: "", prefixCaching: "",
+    reasoningEffort: "",
+  });
+  const optionalNumber = (value: string) => value.trim() ? Number(value) : undefined;
+  const runtimeSettings: RuntimeSettings = {
+    maxOutputTokens: maxTokens, temperature: Number(runtime.temperature || "NaN"), seed: Number(runtime.seed || "NaN"),
+    responseFormat: runtime.responseFormat, endpoint: runtime.endpoint.trim() || undefined,
+    ...(engine === "openai-compatible" ? { reasoningEffort: runtime.reasoningEffort } : {}),
+    ...(engine === "ollama" ? { contextLength: optionalNumber(runtime.contextLength) } : {}),
+    ...(engine === "vllm" && runtime.launchVllm ? {
+      launchVllm: true, maxModelLen: optionalNumber(runtime.maxModelLen),
+      gpuMemoryUtilization: optionalNumber(runtime.gpuMemoryUtilization), quantization: runtime.quantization.trim(),
+      kvCacheDtype: runtime.kvCacheDtype.trim(), prefixCaching: runtime.prefixCaching,
+    } : {}),
+  };
+  const [selectedModelKey, setSelectedModelKey] = useState<string>("custom");
   const [customModelId, setCustomModelId] = useState<string>("");
-  const [quantization, setQuantization] = useState<string>(initialRecipe?.infra_config.quantization || "fp8");
-  const [kvCacheDtype, setKvCacheDtype] = useState<string>(initialRecipe?.infra_config.kv_cache_dtype || "auto");
-  const [enablePrefixCaching, setEnablePrefixCaching] = useState<boolean>(
-    initialRecipe?.infra_config.enable_prefix_caching ?? true
-  );
-  const [maxContextLen, setMaxContextLen] = useState<number>(initialRecipe?.infra_config.max_context_len || 8192);
-  const [gpuMemoryUtil, setGpuMemoryUtil] = useState<number>(
-    initialRecipe?.infra_config.gpu_memory_utilization || 0.90
-  );
-  const [concurrency, setConcurrency] = useState<number>(initialRecipe?.infra_config.concurrency_limit || 1);
+  const [concurrency, setConcurrency] = useState<number>(1);
   const [targetSuite, setTargetSuite] = useState<string>("");
   const suiteExecution = useSuiteExecution(targetSuite, Boolean(targetSuite), registryRevision);
-  const [commandTagSuffix] = useState(() => String(Date.now()));
+  const [commandTagSuffix, setCommandTagSuffix] = useState(() => String(Date.now()));
 
   // Dynamic Model and Suite discovery (Anti-Hardcoding)
   const [modelOptions, setModelOptions] = useState<Array<{ id: string; label: string }>>(
@@ -161,108 +143,38 @@ export function RecipeStudioControls({ initialRecipe, availableModels, registryR
 
   const [copiedCli, setCopiedCli] = useState<boolean>(false);
   const [copyError, setCopyError] = useState<string | null>(null);
-  const [blueprintModal, setBlueprintModal] = useState<RecipeExportResponse | null>(null);
-  const [exporting, setExporting] = useState(false);
-  const [exportError, setExportError] = useState<string | null>(null);
-  const [cliMode, setCliMode] = useState<"recipe" | "sweep">("recipe");
+  const [runnerBackendUrl, setRunnerBackendUrl] = useState("");
+  const [platformOrigin, setPlatformOrigin] = useState("");
+  useEffect(() => setPlatformOrigin(window.location.origin), []);
+  const [cliMode, setCliMode] = useState<"single" | "sweep">("single");
 
   const effectiveModel = selectedModelKey === "custom" && customModelId.trim()
     ? customModelId.trim()
     : selectedModelKey;
   const selectedPromptRecord = registeredPrompts.find((p) => p.name === basePrompt);
   const selectedStrategyRecord = registeredStrategies.find((s) => s.name === promptStrategy);
-  const composedSystemPrompt = selectedPromptRecord
-    ? (selectedStrategyRecord?.directive_text
-        ? `${selectedPromptRecord.system_prompt}\n\n${selectedStrategyRecord.directive_text}`
-        : selectedPromptRecord.system_prompt)
-    : null;
-
-
-  const buildCurrentRecipe = (): ProductionRecipe => {
-    const cleanModelName = effectiveModel.split("/").pop() || effectiveModel;
-    return {
-      id: `custom-recipe-${Date.now()}`,
-      name: `Custom Recipe (${cleanModelName} + ${promptStrategy})`,
-      workload: targetSuite,
-      workload_title: effectiveSuiteOptions.find((suite) => suite.id === targetSuite)?.label || targetSuite,
-      description: "Custom 3-layer recipe configured via the Recipe Studio.",
-      prompt_config: {
-        system_template_id: promptStrategy,
-        temperature,
-        response_format: responseFormat,
-        max_output_tokens: maxTokens,
-        system_prompt: composedSystemPrompt,
-      },
-      rag_config: {
-        chunk_size: chunkSize,
-        chunk_overlap: chunkOverlap,
-        top_k: topK,
-        use_reranker: useReranker,
-        reranker_model: useReranker ? "BAAI/bge-reranker-v2-m3" : null,
-        injection_format: injectionFormat,
-      },
-      infra_config: {
-        engine,
-        model: effectiveModel,
-        quantization: quantization === "none" ? null : quantization,
-        max_context_len: maxContextLen,
-        gpu_memory_utilization: gpuMemoryUtil,
-        concurrency_limit: concurrency,
-        tensor_parallel_size: 1,
-        kv_cache_dtype: kvCacheDtype === "auto" ? null : kvCacheDtype,
-        enable_prefix_caching: enablePrefixCaching,
-      },
-      sla_verdict: {
-        is_golden: false,
-        fit_status: "Needs Evidence",
-        decode_tps: 0,
-        median_ttft_s: 0,
-        p95_ttft_s: 0,
-        quality_score: 0,
-        peak_vram_pct: 0,
-        error_rate_pct: 0.0,
-        evaluation_summary: "Custom 3-layer recipe blueprint generated from Recipe Studio.",
-      },
-    };
-  };
-
-  const handleExportClick = async () => {
-    setExporting(true);
-    setExportError(null);
-    try {
-      const response = await fetch("/api/recipes/export", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(buildCurrentRecipe()),
-      });
-      if (!response.ok) {
-        throw new Error(`Blueprint export failed (HTTP ${response.status})`);
-      }
-      setBlueprintModal(await response.json());
-    } catch (cause) {
-      setExportError(cause instanceof Error ? cause.message : "Blueprint export failed");
-    } finally {
-      setExporting(false);
-    }
-  };
-
   const backendUrl =
+    runnerBackendUrl.trim() ||
     process.env.NEXT_PUBLIC_BENCHMARK_API_URL ||
     process.env.NEXT_PUBLIC_BACKEND_URL ||
-    (typeof window !== "undefined" ? window.location.origin : "<BACKEND_URL>");
+    platformOrigin;
 
   const cleanModelTag = effectiveModel.replace(/[\/:]/g, "__");
 
-  const getCliCommand = () => {
-    if (registryError || !suiteExecution.runnable || !selectedPromptRecord || !selectedStrategyRecord
+  const backendUrlError = backendUrl ? platformUrlError(backendUrl) : null;
+  const configurationError = backendUrlError || runtimeSettingsError(engine, runtimeSettings);
+
+  const getCliCommand = (tagSuffix = commandTagSuffix) => {
+    if (configurationError || registryError || !suiteExecution.runnable || !selectedPromptRecord || !selectedStrategyRecord
       || !effectiveModel || effectiveModel === "custom") return "";
     const levels = cliMode === "sweep" ? [1, 2, 5, 10] : [concurrency];
     if (levels.some((level) => !Number.isInteger(level) || level < 1)) return "";
     return levels.map((level) => buildRunnerCommand({
       model: effectiveModel, engine, suite: targetSuite, prompt: basePrompt,
       strategy: promptStrategy, backendUrl, concurrency: level,
-      experimentTag: `recipe-${engine}-${cleanModelTag}-c${level}-${commandTagSuffix}`,
-    }) + ` \\\n  --max-output-tokens ${maxTokens}`).join("\n\n");
+      experimentTag: `benchmark-${targetSuite}-${engine}-${cleanModelTag}-c${level}-${tagSuffix}`,
+      settings: runtimeSettings,
+    })).join("\n\n");
   };
 
   const cliCommand = getCliCommand();
@@ -270,7 +182,9 @@ export function RecipeStudioControls({ initialRecipe, availableModels, registryR
   const handleCopyCli = async () => {
     if (!cliCommand) return;
     try {
-      await navigator.clipboard.writeText(cliCommand);
+      const tagSuffix = String(Date.now());
+      await navigator.clipboard.writeText(getCliCommand(tagSuffix));
+      setCommandTagSuffix(tagSuffix);
       setCopyError(null);
       setCopiedCli(true);
       setTimeout(() => setCopiedCli(false), 2000);
@@ -280,7 +194,7 @@ export function RecipeStudioControls({ initialRecipe, availableModels, registryR
   };
 
   return (
-    <section id="recipe-studio" className="panel" style={{ width: "100%", overflow: "hidden" }}>
+    <section id="benchmark-controls" className="panel" style={{ width: "100%", overflow: "hidden" }}>
       {/* 1. Clean Studio Header */}
       <div
         style={{
@@ -307,44 +221,20 @@ export function RecipeStudioControls({ initialRecipe, availableModels, registryR
               }}
             />
             <span style={{ fontSize: "0.75rem", textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--text-tertiary)", fontWeight: 600 }}>
-              PRODUCTION RECIPES
+              BENCHMARK RUNNER
             </span>
           </div>
           <h2 style={{ fontSize: "1.28rem", fontWeight: 700, margin: 0, color: "var(--text-primary)", letterSpacing: "-0.01em" }}>
-            3-Layer Recipe Studio
+            Run a benchmark
           </h2>
           <p className="text-sub" style={{ margin: "4px 0 0", fontSize: "0.82rem" }}>
-            Select registered prompts and strategies, configure your engine, and generate a runner command. Retrieval settings apply only to exported blueprints.
+            Select a suite, registered prompt and strategy, then generate a command for your inference host.
           </p>
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-          <button
-            type="button"
-            onClick={handleExportClick}
-            disabled={exporting || engine !== "vllm" || Boolean(registryError) || !suiteExecution.runnable || !selectedPromptRecord || !selectedStrategyRecord || !effectiveModel || effectiveModel === "custom"}
-            title={engine !== "vllm" ? "Deployment blueprint export currently supports vLLM. Benchmark commands support the selected engine." : undefined}
-            className="segmented-btn active"
-            style={{
-              padding: "6px 14px",
-              fontSize: "0.78rem",
-              fontWeight: 600,
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "6px",
-              background: "var(--bg-surface)",
-              border: "1px solid var(--border-default)",
-              color: "var(--text-primary)",
-              cursor: "pointer",
-            }}
-          >
-            <PackageIcon size={13} style={{ color: "var(--accent-blue)" }} />
-            <span>{exporting ? "Exporting…" : "Export Blueprint"}</span>
-          </button>
-        </div>
       </div>
-      {registryError && <div className="settings-error-banner" role="alert" style={{ margin: "16px 24px 0" }}>{registryError}. Some Recipe Studio options may be unavailable.</div>}
-      {exportError && <div className="settings-error-banner" role="alert" style={{ margin: "16px 24px 0" }}>{exportError}</div>}
+      {registryError && <div className="settings-error-banner" role="alert" style={{ margin: "16px 24px 0" }}>{registryError}. Some benchmark options may be unavailable.</div>}
+      {configurationError && <p className="settings-error-banner" role="alert" style={{ margin: "16px 24px" }}>{configurationError}</p>}
       {!suiteExecution.runnable && <p role="status" style={{ margin: "16px 24px" }}>{suiteExecution.reason}</p>}
 
       {/* 2. Layer Navigation Tabs */}
@@ -362,9 +252,8 @@ export function RecipeStudioControls({ initialRecipe, availableModels, registryR
       >
         <div className="segmented-control" style={{ flexWrap: "wrap" }}>
           {[
-            { id: "prompt", label: "1. Prompt Strategy", count: promptStrategy.replace(/_/g, " "), Icon: PenIcon, accentColor: "var(--accent-blue)" },
-            { id: "rag", label: "2. Retrieval Export", count: `Top-${topK} (ovlp: ${chunkOverlap})`, Icon: DatabaseIcon, accentColor: "var(--accent-emerald)" },
-            { id: "infra", label: "3. Engine & Infra", count: `${engine.toUpperCase()} · ${quantization.toUpperCase()}${enablePrefixCaching ? " · Prefix Cache" : ""}`, Icon: CpuIcon, accentColor: "var(--accent-amber)" },
+            { id: "prompt", label: "1. Prompt & output", count: promptStrategy.replace(/_/g, " "), Icon: PenIcon, accentColor: "var(--accent-blue)" },
+            { id: "infra", label: "2. Engine & load", count: engine.toUpperCase(), Icon: CpuIcon, accentColor: "var(--accent-amber)" },
           ].map((tab) => {
             const active = activeTab === tab.id;
             return (
@@ -422,8 +311,9 @@ export function RecipeStudioControls({ initialRecipe, availableModels, registryR
         {activeTab === "prompt" && (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "16px" }}>
             <div className="settings-form-field">
-              <label className="settings-field-label">System Prompt (--prompt, required)</label>
+              <label className="settings-field-label" htmlFor="runner-prompt">System Prompt (--prompt, required)</label>
               <select
+                id="runner-prompt"
                 value={basePrompt}
                 onChange={(e) => setBasePrompt(e.target.value)}
                 className="recipe-select"
@@ -443,8 +333,9 @@ export function RecipeStudioControls({ initialRecipe, availableModels, registryR
             </div>
 
             <div className="settings-form-field">
-              <label className="settings-field-label">Registered strategy (--strategy)</label>
+              <label className="settings-field-label" htmlFor="runner-strategy">Registered strategy (--strategy)</label>
               <select
+                id="runner-strategy"
                 value={promptStrategy}
                 onChange={(e) => setPromptStrategy(e.target.value)}
                 className="recipe-select"
@@ -464,60 +355,9 @@ export function RecipeStudioControls({ initialRecipe, availableModels, registryR
             </div>
 
             <div className="settings-form-field">
-              <label className="settings-field-label">Sampling Temperature</label>
+              <label className="settings-field-label" htmlFor="runner-output-limit">Token Ceiling</label>
               <select
-                value={isCustomTemp ? "custom" : temperature.toFixed(2)}
-                onChange={(e) => {
-                  if (e.target.value === "custom") {
-                    setIsCustomTemp(true);
-                  } else {
-                    setIsCustomTemp(false);
-                    setTemperature(parseFloat(e.target.value));
-                  }
-                }}
-                className="recipe-select"
-              >
-                <option value="0.00">0.00 · Deterministic (Exact & Math)</option>
-                <option value="0.10">0.10 · Structured Extraction</option>
-                <option value="0.20">0.20 · Enterprise Low-Entropy</option>
-                <option value="0.50">0.50 · Balanced Reasoning</option>
-                <option value="0.70">0.70 · Conversational / Creative</option>
-                <option value="custom">Custom value...</option>
-              </select>
-              {isCustomTemp && (
-                <div style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "6px" }}>
-                  <input
-                    type="number"
-                    min="0.0"
-                    max="2.0"
-                    step="0.05"
-                    value={temperature}
-                    onChange={(e) => setTemperature(parseFloat(e.target.value) || 0)}
-                    className="recipe-input"
-                    style={{ width: "100px", fontFamily: "var(--font-mono)" }}
-                  />
-                  <span className="text-sub-mono" style={{ fontSize: "0.72rem", color: "var(--text-tertiary)" }}>
-                    Range: 0.00 – 2.00
-                  </span>
-                </div>
-              )}
-            </div>
-
-            <div className="settings-form-field">
-              <label className="settings-field-label">Response Format</label>
-              <select
-                value={responseFormat}
-                onChange={(e) => setResponseFormat(e.target.value)}
-                className="recipe-select"
-              >
-                <option value="json_object">Strict JSON Object</option>
-                <option value="text">Raw Text / Markdown</option>
-              </select>
-            </div>
-
-            <div className="settings-form-field">
-              <label className="settings-field-label">Token Ceiling</label>
-              <select
+                id="runner-output-limit"
                 value={maxTokens}
                 onChange={(e) => setMaxTokens(parseInt(e.target.value))}
                 className="recipe-select"
@@ -527,99 +367,48 @@ export function RecipeStudioControls({ initialRecipe, availableModels, registryR
                 <option value="512">512 tokens</option>
               </select>
             </div>
+            {engine !== "openai-compatible" && [{ key: "temperature", label: "Temperature", min: 0, max: 2, step: "0.05", hint: "0 uses greedy sampling. Higher values explore more varied answers." },
+              { key: "seed", label: "Sampling seed", min: 0, max: undefined, step: "1", hint: "Saved with results; a seed does not guarantee identical GPU outputs." }].map((field) => (
+              <div className="settings-form-field" key={field.key}>
+                <label className="settings-field-label" htmlFor={`runtime-${field.key}`}>{field.label}</label>
+                <input id={`runtime-${field.key}`} type="number" className="recipe-input" min={field.min} max={field.max} step={field.step}
+                  value={runtime[field.key as "temperature" | "seed"]}
+                  onChange={(event) => setRuntime((previous) => ({ ...previous, [field.key]: event.target.value }))} />
+                <span className="settings-field-hint">{field.hint}</span>
+              </div>
+            ))}
+            {engine !== "openai-compatible" && <div className="settings-form-field">
+              <label className="settings-field-label" htmlFor="runtime-response-format">Response format</label>
+              <select id="runtime-response-format" className="recipe-select" value={runtime.responseFormat}
+                onChange={(event) => setRuntime((previous) => ({ ...previous, responseFormat: event.target.value as "text" | "json" }))}>
+                <option value="text">Task-defined text</option><option value="json">JSON object</option>
+              </select>
+              <span className="settings-field-hint">JSON mode requires tasks and scoring references designed for JSON answers.</span>
+            </div>}
           </div>
         )}
 
-        {/* Tab 2: RAG Pipeline */}
-        {activeTab === "rag" && (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "16px" }}>
-            <p className="text-sub" style={{ gridColumn: "1 / -1" }}>These settings configure exported blueprints only. Benchmarks use the source context in each registered task and do not perform external retrieval.</p>
-            <div className="settings-form-field">
-              <label className="settings-field-label">Retrieved Passages (Top-K)</label>
-              <select
-                value={topK}
-                onChange={(e) => setTopK(parseInt(e.target.value))}
-                className="recipe-select"
-              >
-                <option value="1">Top-1</option>
-                <option value="2">Top-2</option>
-                <option value="3">Top-3 (Recommended)</option>
-                <option value="5">Top-5</option>
-              </select>
-            </div>
-
-            <div className="settings-form-field">
-              <label className="settings-field-label">Chunk Size</label>
-              <select
-                value={chunkSize}
-                onChange={(e) => setChunkSize(parseInt(e.target.value))}
-                className="recipe-select"
-              >
-                <option value="256">256 tokens</option>
-                <option value="384">384 tokens (Recommended)</option>
-                <option value="512">512 tokens</option>
-              </select>
-            </div>
-
-            <div className="settings-form-field">
-              <label className="settings-field-label">Chunk Overlap</label>
-              <select
-                value={chunkOverlap}
-                onChange={(e) => setChunkOverlap(parseInt(e.target.value))}
-                className="recipe-select"
-              >
-                <option value="32">32 tokens</option>
-                <option value="50">50 tokens (Recommended)</option>
-                <option value="64">64 tokens</option>
-                <option value="128">128 tokens</option>
-              </select>
-            </div>
-
-            <div className="settings-form-field">
-              <label className="settings-field-label">Context Injection Format</label>
-              <select
-                value={injectionFormat}
-                onChange={(e) => setInjectionFormat(e.target.value)}
-                className="recipe-select"
-              >
-                <option value="xml_tags">XML Tags (&lt;regulatory_context&gt;)</option>
-                <option value="markdown_context">Markdown Blockquotes</option>
-                <option value="plain_text">Plain Text Delimiters</option>
-              </select>
-            </div>
-
-            <div className="settings-form-field">
-              <label className="settings-field-label">Cross-Encoder Reranker</label>
-              <select
-                value={useReranker ? "true" : "false"}
-                onChange={(e) => setUseReranker(e.target.value === "true")}
-                className="recipe-select"
-              >
-                <option value="true">Enabled · BAAI/bge-reranker-v2-m3 (Recommended)</option>
-                <option value="false">Disabled (Single Vector Search)</option>
-              </select>
-            </div>
-          </div>
-        )}
-
-        {/* Tab 3: Infra & Engine */}
+        {/* Tab 2: Engine & load */}
         {activeTab === "infra" && (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "16px" }}>
             <div className="settings-form-field">
-              <label className="settings-field-label">Inference Engine</label>
+              <label className="settings-field-label" htmlFor="runner-engine">Inference engine / API</label>
               <select
+                id="runner-engine"
                 value={engine}
-                onChange={(e) => setEngine(e.target.value)}
+                onChange={(e) => { setEngine(e.target.value); setRuntime((previous) => ({ ...previous, endpoint: "" })); }}
                 className="recipe-select"
               >
                 <option value="vllm">vLLM (PagedAttention)</option>
                 <option value="ollama">Ollama (GGUF)</option>
+                <option value="openai-compatible">Hosted API (OpenAI-compatible)</option>
               </select>
             </div>
 
             <div className="settings-form-field">
-              <label className="settings-field-label">Model Weights</label>
+              <label className="settings-field-label" htmlFor="runner-model">{engine === "openai-compatible" ? "Provider model ID" : "Model Weights"}</label>
               <select
+                id="runner-model"
                 value={selectedModelKey}
                 onChange={(e) => setSelectedModelKey(e.target.value)}
                 className="recipe-select"
@@ -631,6 +420,7 @@ export function RecipeStudioControls({ initialRecipe, availableModels, registryR
               </select>
               {selectedModelKey === "custom" && (
                 <input
+                  aria-label="Model ID"
                   type="text"
                   value={customModelId}
                   onChange={(e) => setCustomModelId(e.target.value)}
@@ -642,46 +432,9 @@ export function RecipeStudioControls({ initialRecipe, availableModels, registryR
             </div>
 
             <div className="settings-form-field">
-              <label className="settings-field-label">Quantization</label>
+              <label className="settings-field-label" htmlFor="runner-concurrency">Concurrency Load Tier</label>
               <select
-                value={quantization}
-                onChange={(e) => setQuantization(e.target.value)}
-                className="recipe-select"
-              >
-                <option value="fp8">FP8 E4M3 (High Throughput)</option>
-                <option value="awq">AWQ 4-bit (VRAM Compression)</option>
-                <option value="none">BFloat16 / Unquantized</option>
-              </select>
-            </div>
-
-            <div className="settings-form-field">
-              <label className="settings-field-label">KV Cache Precision</label>
-              <select
-                value={kvCacheDtype}
-                onChange={(e) => setKvCacheDtype(e.target.value)}
-                className="recipe-select"
-              >
-                <option value="auto">Auto / FP16</option>
-                <option value="fp8_e5m2">FP8 E5M2 (50% VRAM Savings)</option>
-                <option value="fp8">FP8 E4M3 (Max KV Compression)</option>
-              </select>
-            </div>
-
-            <div className="settings-form-field">
-              <label className="settings-field-label">Prefix Caching (vLLM)</label>
-              <select
-                value={enablePrefixCaching ? "true" : "false"}
-                onChange={(e) => setEnablePrefixCaching(e.target.value === "true")}
-                className="recipe-select"
-              >
-                <option value="true">Enabled · PagedAttention KV Reuse (Recommended)</option>
-                <option value="false">Disabled (Recompute Context Each Request)</option>
-              </select>
-            </div>
-
-            <div className="settings-form-field">
-              <label className="settings-field-label">Concurrency Load Tier</label>
-              <select
+                id="runner-concurrency"
                 value={concurrency}
                 onChange={(e) => setConcurrency(parseInt(e.target.value))}
                 className="recipe-select"
@@ -692,6 +445,65 @@ export function RecipeStudioControls({ initialRecipe, availableModels, registryR
                 <option value="10">C=10 (Production Gate Load)</option>
               </select>
             </div>
+            <div className="settings-form-field">
+              <label className="settings-field-label" htmlFor="runtime-endpoint">{engine === "openai-compatible" ? "Provider API base URL" : "Inference server URL"}</label>
+              <input id="runtime-endpoint" type="url" className="recipe-input" value={runtime.endpoint}
+                placeholder={engine === "openai-compatible" ? "https://<provider-host>/v1" : engine === "vllm" ? "http://<inference-host>:<port>/v1" : "http://<inference-host>:<port>"}
+                onChange={(event) => setRuntime((previous) => ({ ...previous, endpoint: event.target.value }))} />
+              <span className="settings-field-hint">{engine === "openai-compatible" ? "Use the API base, not /chat/completions. Leave empty to use OPENAI_BASE_URL from the runner environment, or the OpenAI API default." : "Reachable from the runner machine. Leave empty to use its engine environment/default."}</span>
+            </div>
+            {engine === "openai-compatible" && <>
+              <div className="settings-form-field">
+                <label className="settings-field-label" htmlFor="runtime-reasoning">Reasoning effort</label>
+                <select id="runtime-reasoning" className="recipe-select" value={runtime.reasoningEffort}
+                  onChange={(event) => setRuntime((previous) => ({ ...previous, reasoningEffort: event.target.value }))}>
+                  <option value="">Omit (standard request)</option>
+                  {["none", "low", "medium", "high", "xhigh", "max"].map((effort) => <option key={effort} value={effort}>{effort}</option>)}
+                </select>
+                <span className="settings-field-hint">Choose only an effort supported by your provider and model. Explicit effort omits sampling controls; otherwise the adapter requests temperature 0.</span>
+              </div>
+              <p className="settings-field-hint" style={{ gridColumn: "1 / -1" }}>Set <code>OPENAI_API_KEY</code> in the runner's <code>.env</code> for provider authentication. This is separate from <code>API_KEY</code>, which authenticates to this platform. Keep both keys out of the generated command. Hosted requests may incur charges; concurrency uses your provider's rate limits. Hardware, memory, and prefill speed are unavailable; latency includes the network round trip.</p>
+            </>}
+            {engine === "ollama" && <div className="settings-form-field">
+              <label className="settings-field-label" htmlFor="runtime-context">Context window (tokens)</label>
+              <input id="runtime-context" type="number" min="1" step="1" className="recipe-input" value={runtime.contextLength} placeholder="Automatic task budget"
+                onChange={(event) => setRuntime((previous) => ({ ...previous, contextLength: event.target.value }))} />
+              <span className="settings-field-hint">Sent as Ollama num_ctx. Larger windows can use more memory; recorded results distinguish requested and observed context.</span>
+            </div>}
+            {engine === "vllm" && <div className="settings-form-field">
+              <label className="settings-field-label" htmlFor="runtime-launch">vLLM server setup</label>
+              <select id="runtime-launch" className="recipe-select" value={runtime.launchVllm ? "managed" : "existing"}
+                onChange={(event) => setRuntime((previous) => ({ ...previous, launchVllm: event.target.value === "managed" }))}>
+                <option value="existing">Use an existing server (recommended)</option><option value="managed">Start a temporary server on the runner machine (advanced)</option>
+              </select>
+              <span className="settings-field-hint">Dedicated mode runs on the runner's GPU machine, waits for readiness, benchmarks, then stops only its own server. Install vLLM there first.</span>
+            </div>}
+            {engine === "vllm" && runtime.launchVllm && <fieldset style={{ gridColumn: "1 / -1", border: "1px solid var(--border-subtle)", borderRadius: "var(--radius-sm)", padding: "16px", minWidth: 0 }}>
+              <legend className="settings-field-label">vLLM startup configuration</legend>
+              <p className="settings-field-hint" style={{ marginBottom: "16px" }}>Choose an unused localhost port above. Blank fields use your installed engine's defaults. Model and GPU support are checked by vLLM at startup; invalid settings stop the run. Launch arguments are saved separately from measured memory and reported context.</p>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "16px" }}>
+                {[
+                  { key: "maxModelLen", label: "Maximum context tokens", type: "number", hint: "Prompt + output capacity (--max-model-len)." },
+                  { key: "gpuMemoryUtilization", label: "GPU memory fraction", type: "number", hint: "Fraction > 0 and ≤ 1. Higher budgets can increase KV capacity and OOM risk." },
+                  { key: "quantization", label: "Weight quantization method", type: "text", hint: "Exact method supported by your installed vLLM and model; blank uses model metadata." },
+                  { key: "kvCacheDtype", label: "KV cache dtype", type: "text", hint: "Exact dtype supported by your version and GPU; blank uses the engine default." },
+                ].map((field) => <div className="settings-form-field" key={field.key}>
+                  <label htmlFor={`startup-${field.key}`} className="settings-field-label">{field.label}</label>
+                  <input id={`startup-${field.key}`} type={field.type} step={field.key === "gpuMemoryUtilization" ? "0.01" : "1"} className="recipe-input" placeholder="Engine default"
+                    value={runtime[field.key as "maxModelLen" | "gpuMemoryUtilization" | "quantization" | "kvCacheDtype"]}
+                    onChange={(event) => setRuntime((previous) => ({ ...previous, [field.key]: event.target.value }))} />
+                  <span className="settings-field-hint">{field.hint}</span>
+                </div>)}
+                <div className="settings-form-field">
+                  <label htmlFor="startup-prefix" className="settings-field-label">Prefix caching</label>
+                  <select id="startup-prefix" className="recipe-select" value={runtime.prefixCaching}
+                    onChange={(event) => setRuntime((previous) => ({ ...previous, prefixCaching: event.target.value }))}>
+                    <option value="">Engine default</option><option value="enabled">Enabled</option><option value="disabled">Disabled</option>
+                  </select>
+                  <span className="settings-field-hint">Reuses shared prompt computation. Compare like-for-like cache conditions.</span>
+                </div>
+              </div>
+            </fieldset>}
           </div>
         )}
       </div>
@@ -707,6 +519,25 @@ export function RecipeStudioControls({ initialRecipe, availableModels, registryR
           gap: "14px",
         }}
       >
+        <details>
+          <summary className="text-sub" style={{ cursor: "pointer" }}>First time? Set up the runner on your inference machine</summary>
+          <div style={{ marginTop: "12px" }}>
+            <p className="text-sub">Run this once in a Bash terminal on the machine that will execute the benchmark. Hosted APIs need no local inference server:</p>
+            <pre style={{ overflowX: "auto", fontSize: "0.78rem", lineHeight: 1.6 }}><code>{`git clone https://github.com/aamohmd/LLM-Bench-Runner.git &&
+  cd LLM-Bench-Runner &&
+  bash scripts/setup.sh`}</code></pre>
+            <p className="text-sub">Open <code>LLM-Bench-Runner/.env</code> and set <code>API_KEY</code> to an admin key from Settings → API access. For hosted APIs, also set <code>OPENAI_API_KEY</code> to your provider key; for Ollama or vLLM, start your model server. Run the benchmark command below from the runner folder.</p>
+            <p className="text-sub">Already installed? Skip the clone step. If the platform is on another machine, enter its address below instead of localhost.</p>
+          </div>
+        </details>
+        <div className="settings-form-field">
+          <label className="settings-field-label" htmlFor="runner-backend-url">Platform URL reachable from the runner</label>
+          <input id="runner-backend-url" type="url" className="recipe-input" value={runnerBackendUrl} placeholder={backendUrl}
+            aria-invalid={Boolean(backendUrlError)} aria-describedby={backendUrlError ? "runner-backend-error" : undefined}
+            onChange={(event) => setRunnerBackendUrl(event.target.value)} />
+          {backendUrlError && <span id="runner-backend-error" className="settings-inline-error" role="alert">{backendUrlError}</span>}
+          <span className="settings-field-hint">Use the dashboard URL or a directly reachable API base URL. For a separate GPU machine, replace localhost with your secured platform address.</span>
+        </div>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "12px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
             <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
@@ -719,8 +550,8 @@ export function RecipeStudioControls({ initialRecipe, availableModels, registryR
             <div className="segmented-control">
               <button
                 type="button"
-                onClick={() => setCliMode("recipe")}
-                className={`segmented-btn ${cliMode === "recipe" ? "active" : ""}`}
+                onClick={() => setCliMode("single")}
+                className={`segmented-btn ${cliMode === "single" ? "active" : ""}`}
               >
                 Single Run (C={concurrency})
               </button>
@@ -738,6 +569,7 @@ export function RecipeStudioControls({ initialRecipe, availableModels, registryR
             <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
               <span className="text-sub-mono" style={{ fontSize: "0.74rem", color: "var(--text-tertiary)" }}>Suite:</span>
               <select
+                aria-label="Benchmark suite"
                 value={targetSuite}
                 onChange={(e) => setTargetSuite(e.target.value)}
                 className="recipe-select"
@@ -886,13 +718,6 @@ export function RecipeStudioControls({ initialRecipe, availableModels, registryR
         </div>
       </div>
 
-      {/* Blueprint Export Modal */}
-      {blueprintModal && (
-        <ProductionBlueprintModal
-          blueprint={blueprintModal}
-          onClose={() => setBlueprintModal(null)}
-        />
-      )}
     </section>
   );
 }

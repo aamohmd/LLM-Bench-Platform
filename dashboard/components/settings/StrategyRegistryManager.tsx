@@ -1,5 +1,7 @@
 "use client";
 
+import { apiErrorMessage } from "../../lib/apiErrors";
+
 import { FormEvent, useEffect, useState } from "react";
 import { SettingsSectionSkeleton } from "../SkeletonState";
 import { RegistryDeleteDialog } from "./RegistryDeleteDialog";
@@ -21,6 +23,7 @@ export function StrategyRegistryManager({ onNotify }: { onNotify: (message: stri
   const [strategies, setStrategies] = useState<Strategy[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
   const [name, setName] = useState("");
   const [label, setLabel] = useState("");
   const [description, setDescription] = useState("");
@@ -38,7 +41,7 @@ export function StrategyRegistryManager({ onNotify }: { onNotify: (message: stri
     try {
       const response = await fetch("/api/strategies?include_inactive=true", { cache: "no-store" });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Unable to load strategies");
+      if (!response.ok) throw new Error(apiErrorMessage(data, "Unable to load strategies"));
       setStrategies(Array.isArray(data) ? data : []);
       setError(null);
     } catch (cause) {
@@ -54,6 +57,9 @@ export function StrategyRegistryManager({ onNotify }: { onNotify: (message: stri
 
   const create = async (event: FormEvent) => {
     event.preventDefault();
+    if (saving) return;
+    setSaving(true);
+    setError(null);
     try {
       const response = await fetch("/api/strategies", {
         method: "POST",
@@ -66,7 +72,7 @@ export function StrategyRegistryManager({ onNotify }: { onNotify: (message: stri
         }),
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Unable to create strategy");
+      if (!response.ok) throw new Error(apiErrorMessage(data, "Unable to create strategy"));
       setName("");
       setLabel("");
       setDescription("");
@@ -75,10 +81,13 @@ export function StrategyRegistryManager({ onNotify }: { onNotify: (message: stri
       void load();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Unable to create strategy");
+    } finally {
+      setSaving(false);
     }
   };
 
   const startEdit = (strategy: Strategy) => {
+    setError(null);
     setEditing(strategy);
     setEditLabel(strategy.label);
     setEditDescription(strategy.description || "");
@@ -88,7 +97,9 @@ export function StrategyRegistryManager({ onNotify }: { onNotify: (message: stri
 
   const saveEdit = async (event: FormEvent) => {
     event.preventDefault();
-    if (!editing) return;
+    if (!editing || saving) return;
+    setSaving(true);
+    setError(null);
     try {
       const response = await fetch(`/api/strategies/${editing.id}`, {
         method: "PUT",
@@ -101,12 +112,14 @@ export function StrategyRegistryManager({ onNotify }: { onNotify: (message: stri
         }),
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Unable to update strategy");
+      if (!response.ok) throw new Error(apiErrorMessage(data, "Unable to update strategy"));
       setEditing(null);
       onNotify(`Strategy '${data.label}' updated.`);
       void load();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Unable to update strategy");
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -122,7 +135,7 @@ export function StrategyRegistryManager({ onNotify }: { onNotify: (message: stri
         <div className="prompt-registry__summary"><strong>{activeCount}</strong><span>active strategies</span></div>
       </div>
 
-      {error && (
+      {error && !editing && (
         <div className="settings-error-banner" role="alert">
           <strong>Action Error</strong>: {error}
         </div>
@@ -160,7 +173,7 @@ export function StrategyRegistryManager({ onNotify }: { onNotify: (message: stri
           <span className="settings-field-hint">Appended to the selected system prompt during composition</span>
         </label>
         <div className="settings-form-footer">
-          <button type="submit" className="settings-btn-primary">Create strategy</button>
+          <button type="submit" className="settings-btn-primary" disabled={saving}>{saving ? "Saving…" : "Create strategy"}</button>
         </div>
       </form>
 
@@ -224,6 +237,7 @@ export function StrategyRegistryManager({ onNotify }: { onNotify: (message: stri
           <form ref={editDialogRef} className="settings-modal-card prompt-registry__modal" onSubmit={(event) => void saveEdit(event)} role="dialog" aria-modal="true" aria-labelledby="strategy-editor-title" tabIndex={-1}>
             <span className="text-eyebrow">Strategy editor</span>
             <h3 id="strategy-editor-title" className="settings-modal-title">Edit {editing.label}</h3>
+            {error && <p className="settings-error-banner" role="alert">{error}</p>}
             <p className="strategy-registry__modal-slug">--strategy {editing.name}</p>
             <div className="settings-form-grid strategy-registry__modal-grid">
               <label className="settings-form-field">
@@ -248,7 +262,7 @@ export function StrategyRegistryManager({ onNotify }: { onNotify: (message: stri
             </label>
             <div className="settings-modal-actions">
               <button type="button" className="settings-btn-secondary" onClick={() => setEditing(null)}>Cancel</button>
-              <button type="submit" className="settings-btn-primary">Save changes</button>
+              <button type="submit" className="settings-btn-primary" disabled={saving}>{saving ? "Saving…" : "Save changes"}</button>
             </div>
           </form>
         </div>
@@ -256,8 +270,8 @@ export function StrategyRegistryManager({ onNotify }: { onNotify: (message: stri
       <RegistryDeleteDialog
         resource="strategies" entry={pendingDelete} label="strategy"
         onCancel={() => setPendingDelete(null)}
-        onDeleted={(impact) => {
-          onNotify(`Strategy '${pendingDelete?.label}' and ${impact.run_count} associated runs deleted.`);
+        onDeleted={() => {
+          onNotify(`Strategy '${pendingDelete?.label}' deleted. Recorded results are unchanged.`);
           setPendingDelete(null);
           void load();
         }}

@@ -1,5 +1,7 @@
 "use client";
 
+import { apiErrorMessage } from "../../lib/apiErrors";
+
 import { useState, useEffect, useMemo, useRef, ChangeEvent, DragEvent } from "react";
 import {
   parseTaskSuiteFile,
@@ -101,6 +103,7 @@ export function TaskSuiteManager({ onNotify }: { onNotify: (msg: string) => void
   const [cliSuite, setCliSuite] = useState<BenchmarkSuite | null>(null);
   const [cliEngine, setCliEngine] = useState<"vllm" | "ollama" | "openai-compatible">("vllm");
   const [cliModel, setCliModel] = useState<string>("");
+  const [cliProviderEndpoint, setCliProviderEndpoint] = useState("");
   const [cliConcurrency, setCliConcurrency] = useState<number>(10);
   const [cliCopied, setCliCopied] = useState(false);
   const [cliCopyError, setCliCopyError] = useState<string | null>(null);
@@ -172,7 +175,7 @@ export function TaskSuiteManager({ onNotify }: { onNotify: (msg: string) => void
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Suite could not be created");
+      if (!res.ok) throw new Error(apiErrorMessage(data, "Suite could not be created"));
       onNotify(`Empty suite created: ${suiteEditor.name.trim()}`);
       setSelectedSuiteId(suiteId);
       setIsSuiteEditorOpen(false);
@@ -246,7 +249,7 @@ export function TaskSuiteManager({ onNotify }: { onNotify: (msg: string) => void
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: group.id, name: group.name, domain: parent.domain, is_required: group.is_required === false }),
       });
-      if (!res.ok) throw new Error((await res.json()).detail || "Category requirement could not be updated");
+      if (!res.ok) throw new Error(apiErrorMessage(await res.json(), "Category requirement could not be updated"));
       onNotify(`${group.name} is now ${group.is_required === false ? "required" : "optional"} for future scoreboard runs.`);
       await loadSuites();
     } catch (err: any) {
@@ -307,7 +310,7 @@ export function TaskSuiteManager({ onNotify }: { onNotify: (msg: string) => void
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Category could not be saved");
+      if (!res.ok) throw new Error(apiErrorMessage(data, "Category could not be saved"));
       onNotify(`Category ${mode === "edit" ? "updated" : "added"}: ${category.name.trim()}`);
       setCategoryEditor(null);
       await loadSuites();
@@ -332,7 +335,7 @@ export function TaskSuiteManager({ onNotify }: { onNotify: (msg: string) => void
         body: JSON.stringify(payload),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : Array.isArray(data.detail) ? data.detail.map((issue: { msg: string }) => issue.msg).join("; ") : "Task could not be saved");
+      if (!res.ok) throw new Error(apiErrorMessage(data, "Task could not be saved"));
       onNotify(`Task ${mode === "edit" ? "updated" : "added"}: ${task.id}`);
       setTaskEditor(null);
       await loadSuites();
@@ -347,7 +350,7 @@ export function TaskSuiteManager({ onNotify }: { onNotify: (msg: string) => void
   const deleteTask = async (suite: BenchmarkSuite, task: TaskItem) => {
     try {
       const res = await fetch(`/api/tasks/${encodeURIComponent(task.id)}`, { method: "DELETE" });
-      if (!res.ok) throw new Error((await res.json()).detail || "Task could not be removed");
+      if (!res.ok) throw new Error(apiErrorMessage(await res.json(), "Task could not be removed"));
       onNotify(`Task removed: ${task.id}`);
       setPendingDelete(null);
       await loadSuites();
@@ -443,7 +446,7 @@ export function TaskSuiteManager({ onNotify }: { onNotify: (msg: string) => void
 
       const data = await res.json();
       if (!res.ok || data.success === false) {
-        throw new Error(data.error || data.detail || "Upload rejected");
+        throw new Error(apiErrorMessage(data, "Upload rejected"));
       }
 
       onNotify(`✓ Suite "${data.suite_name || customSuiteName}" saved with ${data.total_tasks || data.inserted} tasks!`);
@@ -508,8 +511,9 @@ export function TaskSuiteManager({ onNotify }: { onNotify: (msg: string) => void
       "<BACKEND_URL>";
     return buildRunnerCommand({ model: cliModel, engine: cliEngine, suite: cliSuite.id,
       prompt: cliPrompt, strategy: cliStrategy, backendUrl, concurrency: cliConcurrency,
+      settings: cliEngine === "openai-compatible" ? { maxOutputTokens: 512, temperature: 0, seed: 42, responseFormat: "text", endpoint: cliProviderEndpoint.trim() || undefined } : undefined,
       experimentTag: `settings-${cliEngine}-${cliSuite.id}-${cliTagSuffix}` });
-  }, [cliSuite, cliEngine, cliModel, cliConcurrency, cliPrompt, cliStrategy, cliTagSuffix, runnerRegistry.error, suiteExecution.runnable]);
+  }, [cliSuite, cliEngine, cliModel, cliConcurrency, cliPrompt, cliStrategy, cliTagSuffix, cliProviderEndpoint, runnerRegistry.error, suiteExecution.runnable]);
 
   const copyCliCommand = async () => {
     if (!generatedCliCmd) return;
@@ -610,6 +614,7 @@ export function TaskSuiteManager({ onNotify }: { onNotify: (msg: string) => void
           <input
             type="text"
             placeholder="Search suites by name or id..."
+            aria-label="Search suites"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
           />
@@ -1040,7 +1045,7 @@ export function TaskSuiteManager({ onNotify }: { onNotify: (msg: string) => void
                 >
                   <option value="vllm">vLLM</option>
                   <option value="ollama">Ollama</option>
-                  <option value="openai-compatible">Hosted API</option>
+                  <option value="openai-compatible">Hosted API (OpenAI-compatible)</option>
                 </select>
               </div>
 
@@ -1086,6 +1091,13 @@ export function TaskSuiteManager({ onNotify }: { onNotify: (msg: string) => void
               <label>Registered prompt<select className="recipe-select" value={cliPrompt} onChange={(event) => setCliPrompt(event.target.value)}>{runnerRegistry.prompts.map((prompt) => <option key={prompt.id} value={prompt.name}>{prompt.name}</option>)}</select></label>
               <label>Registered strategy<select className="recipe-select" value={cliStrategy} onChange={(event) => setCliStrategy(event.target.value)}>{runnerRegistry.strategies.map((strategy) => <option key={strategy.id} value={strategy.name}>{strategy.name}</option>)}</select></label>
             </div>
+
+            {cliEngine === "openai-compatible" && <div className="settings-form-field">
+              <label htmlFor="suite-provider-endpoint" className="settings-field-label">Provider API base URL</label>
+              <input id="suite-provider-endpoint" className="recipe-input" type="url" value={cliProviderEndpoint}
+                placeholder="https://<provider-host>/v1" onChange={(event) => setCliProviderEndpoint(event.target.value)} />
+              <p className="settings-field-hint">Leave empty to use the runner's OPENAI_BASE_URL or the OpenAI API default. Set OPENAI_API_KEY in the runner's .env for provider access, separately from the platform API_KEY. Requests may incur charges; respect provider rate limits. GPU and memory measurements are unavailable.</p>
+            </div>}
 
             {/* Code Box */}
             <div style={{ position: "relative" }}>
@@ -1434,7 +1446,7 @@ export function TaskSuiteManager({ onNotify }: { onNotify: (msg: string) => void
         entry={pendingDelete?.type === "suite" ? pendingDelete.suite : pendingDelete?.type === "category" ? pendingDelete.category : null}
         onCancel={() => setPendingDelete(null)}
         onDeleted={(impact) => {
-          onNotify(`Configuration, ${impact.task_count} tasks and ${impact.run_count} associated runs deleted.`);
+          onNotify(`Configuration and ${impact.task_count} tasks deleted. Recorded results are unchanged.`);
           setPendingDelete(null);
           setInspectingSuite(null);
           void loadSuites();

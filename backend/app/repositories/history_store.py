@@ -2623,6 +2623,8 @@ class BenchmarkHistoryRepository:
     def delete_registry_entry(self, kind: str, entry_id: str, expected_run_count: int | None = None) -> dict:
         with self._session_factory.begin() as session:
             record, run_ids, task_filter, suite_ids, impact = self._registry_deletion_state(session, kind, entry_id, lock=True)
+            if run_ids:
+                raise DeletionConflict("This configuration is used by recorded benchmarks and cannot be deleted. Benchmark history is preserved.")
             if (run_ids and expected_run_count is None) or (expected_run_count is not None and expected_run_count != len(run_ids)):
                 raise DeletionConflict(f"Deletion affects {len(run_ids)} associated runs. Reload the deletion warning and confirm the current run count.")
             # Explicit child cleanup also works on SQLite connections without

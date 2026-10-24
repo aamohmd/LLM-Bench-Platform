@@ -17,19 +17,28 @@ export function QualityDrilldown({
   totalCount,
   errorRateStr,
   taskScores,
+  canViewTraces = false,
 }: {
   runId: string;
   score: number;
-  successCount: number;
+  successCount: number | string;
   totalCount: number | string;
   errorRateStr: string;
   taskScores: Record<string, any>;
+  canViewTraces?: boolean;
 }) {
   const [isOpen, setIsOpen] = useState(false);
   const [auditOpen, setAuditOpen] = useState(false);
+  const needsDetails = Object.keys(taskScores).length === 0;
+  const { data: detail, error: detailError, isLoading: detailsLoading } = useSWR(
+    isOpen && needsDetails && runId ? `/api/v1/benchmark-history/${runId}` : null,
+    fetcher,
+    { revalidateOnFocus: false, revalidateOnReconnect: false }
+  );
+  const effectiveTaskScores: Record<string, any> = detail?.task_scores ?? taskScores;
 
   const { data: failedTraces, error: tracesError, isLoading: isLoadingTraces } = useSWR(
-    auditOpen ? `/api/v1/benchmark-history/${runId}/failed-traces` : null,
+    canViewTraces && auditOpen ? `/api/v1/benchmark-history/${runId}/failed-traces` : null,
     fetcher,
     {
       revalidateOnFocus: false,
@@ -55,7 +64,9 @@ export function QualityDrilldown({
             border: "1px solid var(--border-subtle)",
           }}
         >
-          {Object.entries(taskScores)
+          {detailsLoading && <SettingsSectionSkeleton label="Loading task scoring evidence" rows={2} compact />}
+          {detailError && <p role="alert">Task evidence could not be loaded. This is an API failure, not an all-pass result.</p>}
+          {Object.entries(effectiveTaskScores)
             .sort((a, b) => {
               if (a[1].failed && !b[1].failed) return -1;
               if (!a[1].failed && b[1].failed) return 1;
@@ -76,15 +87,15 @@ export function QualityDrilldown({
                   </span>
                   <span
                     style={{
-                      color: taskScore.failed ? "var(--fg-error)" : "var(--fg-success)",
+                      color: taskScore.failed ? "var(--fg-error)" : taskScore.score == null ? "var(--text-secondary)" : "var(--fg-success)",
                       fontWeight: 600,
                     }}
                   >
-                    {taskScore.failed ? "FAIL" : "PASS"}
+                    {taskScore.score == null ? (taskScore.failed ? "ERROR" : "UNSCORED") : taskScore.failed ? "FAIL" : "PASS"}
                   </span>
                 </div>
-                {taskScore.failed && (
-                  <div style={{ color: "var(--fg-error)", marginTop: "2px", opacity: 0.9 }}>
+                {taskScore.reason && (
+                  <div style={{ color: taskScore.failed ? "var(--fg-error)" : "var(--text-secondary)", marginTop: "2px", opacity: 0.9 }}>
                     Reason: {taskScore.reason}
                   </div>
                 )}
@@ -96,7 +107,8 @@ export function QualityDrilldown({
               </div>
             ))}
           
-          <div style={{ marginTop: "16px", paddingTop: "8px", borderTop: "1px solid var(--border-strong)" }}>
+          {isOpen && !detailsLoading && !detailError && Object.keys(effectiveTaskScores).length === 0 && <p>No per-task scoring evidence was recorded.</p>}
+          {canViewTraces && <div style={{ marginTop: "16px", paddingTop: "8px", borderTop: "1px solid var(--border-strong)" }}>
             <details onToggle={(e) => setAuditOpen((e.target as HTMLDetailsElement).open)}>
               <summary style={{ cursor: "pointer", color: "var(--text-secondary)", fontWeight: 500 }}>
                 ▶ Audit Log (Raw Traces)
@@ -130,18 +142,18 @@ export function QualityDrilldown({
                       </div>
                     </div>
                   ))
-                ) : Object.values(taskScores).some((t: any) => t.failed) ? (
+                ) : Object.values(effectiveTaskScores).some((t: any) => t.failed) ? (
                   <div style={{ color: "var(--text-subtle)", fontStyle: "italic", padding: "8px" }}>
-                    Traces not captured for this run (requires --capture-traces flag).
+                    No stored traces are available. They may not have been captured or may have expired.
                   </div>
                 ) : (
                   <div style={{ color: "var(--text-subtle)", fontStyle: "italic", padding: "8px" }}>
-                    All tasks passed. No failed traces.
+                    No failed traces were recorded. Detailed traces require capture during execution and expire after retention.
                   </div>
                 )}
               </div>
             </details>
-          </div>
+          </div>}
         </div>
       </details>
       <div style={{ marginTop: "4px" }}>

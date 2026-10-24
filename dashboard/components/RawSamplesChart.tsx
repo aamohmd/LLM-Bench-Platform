@@ -17,47 +17,41 @@ export function RawSamplesChart({ samples }: { samples: BenchmarkSample[] }) {
     });
     observer.observe(containerRef.current);
     return () => observer.disconnect();
-  }, []);
+  }, [samples]);
 
   if (!samples || samples.length === 0) return null;
 
-  // Find min/max for scaling
-  const validGpuSamples = samples.filter(s => s.gpu_mem_mb != null);
-  const validItlSamples = samples.filter(s => s.itl_ms != null);
-  
-  if (validGpuSamples.length === 0 && validItlSamples.length === 0) return null;
-
-  const maxGpu = Math.max(...validGpuSamples.map((s) => s.gpu_mem_mb as number), 100);
-  const maxItl = Math.max(...validItlSamples.map((s) => s.itl_ms as number), 10);
-
-  const height = 240;
-  const paddingX = 50;
-  const paddingY = 30;
-
+  const measured = (value: number | undefined) => typeof value === "number" && Number.isFinite(value) && value >= 0;
+  const validGpuSamples = samples.filter((sample) => measured(sample.gpu_mem_mb));
+  const validItlSamples = samples.filter((sample) => measured(sample.itl_ms));
+  if (!validGpuSamples.length && !validItlSamples.length) return null;
+  const maxGpu = Math.max(...validGpuSamples.map((sample) => sample.gpu_mem_mb as number), 100);
+  const maxItl = Math.max(...validItlSamples.map((sample) => sample.itl_ms as number), 10);
+  const height = 240, paddingX = 50, paddingY = 30;
   const chartWidth = Math.max(width - paddingX * 2, 10);
   const chartHeight = height - paddingY * 2;
-
-  // Scale functions
-  const getX = (index: number, total: number) => paddingX + (index / (total - 1 || 1)) * chartWidth;
-  const getY = (value: number, max: number) => height - paddingY - (value / max) * chartHeight;
-
-  const gpuPoints = validGpuSamples.map((s, i) => `${getX(i, validGpuSamples.length)},${getY(s.gpu_mem_mb as number, maxGpu)}`).join(" ");
-  const itlPoints = validItlSamples.map((s, i) => `${getX(i, validItlSamples.length)},${getY(s.itl_ms as number, maxItl)}`).join(" ");
-
-  // Path for fill (closing the shape to the bottom)
-  const gpuFillPath = validGpuSamples.length > 0 ? `${getX(0, validGpuSamples.length)},${height - paddingY} ${gpuPoints} ${getX(validGpuSamples.length - 1, validGpuSamples.length)},${height - paddingY}` : "";
-  const itlFillPath = validItlSamples.length > 0 ? `${getX(0, validItlSamples.length)},${height - paddingY} ${itlPoints} ${getX(validItlSamples.length - 1, validItlSamples.length)},${height - paddingY}` : "";
+  const getX = (index: number) => paddingX + index / Math.max(samples.length - 1, 1) * chartWidth;
+  const getY = (value: number, max: number) => height - paddingY - value / max * chartHeight;
+  // Both series share original sample positions; missing readings break a line.
+  const segments = (key: "gpu_mem_mb" | "itl_ms", max: number) => {
+    const groups: string[][] = [];
+    let current: string[] = [];
+    samples.forEach((sample, index) => {
+      const value = sample[key];
+      if (measured(value)) current.push(`${getX(index)},${getY(value as number, max)}`);
+      else if (current.length) { groups.push(current); current = []; }
+    });
+    if (current.length) groups.push(current);
+    return groups;
+  };
 
   return (
     <div className="panel" style={{ marginTop: "24px", overflow: "hidden" }}>
       <div className="panel-header" style={{ padding: "16px 24px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <span className="text-eyebrow">INFERENCE TELEMETRY OVER TIME</span>
+        <span className="text-eyebrow">INFERENCE TELEMETRY SAMPLES</span>
         <div style={{ display: "flex", gap: "16px", fontSize: "0.75rem", fontFamily: "var(--font-mono)", color: "var(--text-secondary)" }}>
-          <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-            <span style={{ width: "8px", height: "8px", background: "var(--accent-white)", display: "inline-block" }} /> 
-            GPU Memory
-          </span>
-          {samples.some(s => s.itl_ms !== undefined) && (
+          {validGpuSamples.length > 0 && <span style={{ display: "flex", alignItems: "center", gap: "6px" }}><span style={{ width: "8px", height: "8px", background: "var(--accent-white)", display: "inline-block" }} />GPU Memory</span>}
+          {validItlSamples.length > 0 && (
             <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
               <span style={{ width: "8px", height: "8px", background: "var(--accent-lime)", display: "inline-block" }} /> 
               Inter-Token Latency
@@ -84,24 +78,19 @@ export function RawSamplesChart({ samples }: { samples: BenchmarkSample[] }) {
             <line key={i} x1={paddingX} y1={paddingY + chartHeight * ratio} x2={width - paddingX} y2={paddingY + chartHeight * ratio} stroke="var(--border-subtle)" strokeWidth="1" strokeDasharray="4 4" />
           ))}
 
-          {/* ITL Area & Line */}
-          {validItlSamples.length > 0 && (
-            <>
-              <polygon points={itlFillPath} fill="url(#itlGradient)" />
-              <polyline fill="none" stroke="var(--accent-lime)" strokeWidth="2" strokeLinejoin="round" points={itlPoints} />
-            </>
-          )}
-
-          {/* GPU Area & Line */}
-          {validGpuSamples.length > 0 && (
-            <>
-              <polygon points={gpuFillPath} fill="url(#gpuGradient)" />
-              <polyline fill="none" stroke="var(--accent-white)" strokeWidth="2" strokeLinejoin="round" points={gpuPoints} />
-            </>
-          )}
+          {[
+            { key: "gpu_mem_mb" as const, max: maxGpu, color: "var(--accent-white)" },
+            { key: "itl_ms" as const, max: maxItl, color: "var(--accent-lime)" },
+          ].map((series) => segments(series.key, series.max).map((points, index) => (
+            <g key={`${series.key}-${index}`}>
+              {points.length > 1 && <polygon points={`${points[0].split(",")[0]},${height - paddingY} ${points.join(" ")} ${points[points.length - 1].split(",")[0]},${height - paddingY}`} fill={`url(#${series.key === "gpu_mem_mb" ? "gpuGradient" : "itlGradient"})`} />}
+              <polyline fill="none" stroke={series.color} strokeWidth="2" strokeLinejoin="round" points={points.join(" ")} />
+              {points.map((point, pointIndex) => { const [cx, cy] = point.split(","); return <circle key={pointIndex} cx={cx} cy={cy} r="2" fill={series.color} />; })}
+            </g>
+          )))}
 
           {/* Y Axis Labels (Left for GPU) */}
-          {[0, 0.5, 1].map((ratio, i) => (
+          {validGpuSamples.length > 0 && [0, 0.5, 1].map((ratio, i) => (
             <text key={`gpu-${i}`} x={paddingX - 10} y={paddingY + chartHeight * (1 - ratio)} fontSize="11" fill="var(--text-secondary)" fontFamily="var(--font-mono)" textAnchor="end" alignmentBaseline="middle">
               {((maxGpu * ratio) / 1024).toFixed(1)}GB
             </text>
@@ -115,7 +104,7 @@ export function RawSamplesChart({ samples }: { samples: BenchmarkSample[] }) {
           ))}
         </svg>
         <table className="sr-only">
-          <caption>Inference telemetry samples over time</caption>
+          <caption>Inference telemetry in recorded sample order; gaps mean missing readings</caption>
           <thead><tr><th>Sample</th><th>GPU memory</th><th>Inter-token latency</th></tr></thead>
           <tbody>
             {samples.map((sample, index) => (
