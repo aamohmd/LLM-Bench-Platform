@@ -52,9 +52,10 @@ def evaluate_approval_run(
     """Evaluate only required rows belonging to one approval execution.
 
     Categories come from the run's registry snapshot; no domain catalog is
-    embedded in the control plane. Quality below 75% rejects, scores within
-    five points of that boundary are near-misses, and absent evidence remains
-    explicitly unqualified.
+    embedded in the control plane. Quality below 70% rejects, 70% to below
+    75% is a near-miss, and absent quality or reliability evidence remains
+    explicitly unqualified. This legacy matrix check uses fixed thresholds;
+    the dashboard's deployment scorecard uses the suite's assigned SLA policy.
     """
     scoped = [
         result
@@ -93,6 +94,7 @@ def evaluate_approval_run(
         if score is None:
             status = "Needs Evidence"
             evidence_reasons.append("quality score is missing")
+            reasons.append(f"{category}@C{level}: quality score is missing")
         elif score < 0.70:
             status = "Rejected"
             evidence_reasons.append(f"quality {score:.1%} is below 70%")
@@ -104,6 +106,11 @@ def evaluate_approval_run(
 
         catastrophic = int(result.get("catastrophic_failure_count") or 0)
         error_rate = _error_rate(result)
+        if error_rate is None:
+            if status == "Qualified":
+                status = "Needs Evidence"
+            evidence_reasons.append("request reliability evidence is missing")
+            reasons.append(f"{category}@C{level}: request reliability evidence is missing")
         if catastrophic:
             status = "Rejected"
             rejected.append(f"{category}@C{level}: {catastrophic} catastrophic failure(s)")

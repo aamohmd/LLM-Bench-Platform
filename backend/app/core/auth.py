@@ -1,6 +1,6 @@
 """
 Validates API keys on incoming requests via the X-API-Key header.
-Runs inside the hosted backend (Railway); gates every route except /health.
+Runs inside the backend; gates protected routes while health and service metadata remain public.
 Checks against hashed keys in the api_keys table (see history_store.py).
 Two scopes exist: "admin" (read, contribute, and key lifecycle) and "visitor"
 (read-only). Benchmark submission requires an admin key.

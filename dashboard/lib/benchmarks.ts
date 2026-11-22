@@ -600,7 +600,7 @@ async function fetchRaw(path: string, init?: RequestInit): Promise<Response | nu
       } catch {
         // cookies() might fail outside request context
       }
-      const apiKey = cookieKey || process.env.ADMIN_API_KEY || process.env.BENCHMARK_API_KEY;
+      const apiKey = cookieKey;
       if (apiKey) {
         headers["X-API-Key"] = apiKey;
       }
@@ -650,7 +650,7 @@ export type PipelineConfig = {
   engine: string;
   model: string;
   quantization?: string | null;
-  max_context_len: number;
+  max_context_len: number | null;
   gpu_memory_utilization?: number | null;
   retrieval_k?: number | null;
   reranker_model?: string | null;

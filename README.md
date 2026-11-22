@@ -75,6 +75,8 @@ Configurations used by recorded benchmarks cannot be deleted. Both the confirmat
 
 Requires Python 3.12 and Node.js 22 or later.
 
+The dashboard stays on the Next.js 15.5 maintenance line. Its lockfile includes the security-patched framework and image dependencies. A targeted PostCSS 8.5.23 override replaces Next.js's older pinned CSS dependency; keep it until the framework bundles a patched version, and validate any change with the regression checks and production build. Use `npm ci` to install the reviewed lockfile.
+
 ```sh
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
@@ -83,6 +85,24 @@ npm --prefix dashboard run build
 ```
 
 To run the API outside Docker, configure `DATABASE_URL` for your database in the environment or `.env`, then run `.venv/bin/python -m uvicorn backend.app.main:app --reload`. For dashboard development, set `BENCHMARK_API_URL=http://localhost:8000` and run `npm --prefix dashboard run dev`.
+
+Run the regression checks with:
+
+```sh
+.venv/bin/python -m pip install -r requirements-dev.txt
+.venv/bin/python -m pytest
+npm --prefix dashboard test
+npm --prefix dashboard run typecheck
+npm --prefix dashboard run build
+```
+
+Backend tests use synthetic data in temporary SQLite databases. Set `TEST_DATABASE_URL` to a PostgreSQL test database to repeat them against PostgreSQL; each test creates and removes its own isolated schema. The test account needs permission to create schemas. CI runs both database variants. These checks do not replace a real inference-engine smoke test.
+
+Imports reject invalid batches without saving a partial task set. Task IDs are installation-wide; importing a category cannot overwrite tasks belonging to another category. Use the task update endpoint for deliberate edits. The API proxy requires the caller's key or authenticated session and never supplies a server-wide fallback credential.
+
+CSV exports use the suite's assigned SLA policy, leave missing evidence untested, and escape spreadsheet formula text. The legacy `/approval-runs` matrix check uses fixed 70%/75% quality boundaries and a 1% error ceiling; it is distinct from the dashboard's policy-based deployment scorecard.
+
+Unknown pipeline context limits and GPU memory fractions remain null. The context-limit migration preserves existing records; it does not retroactively infer which historical defaults were assumptions.
 
 ## Structure
 

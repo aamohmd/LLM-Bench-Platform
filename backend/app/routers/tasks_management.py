@@ -9,6 +9,7 @@ import json
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File, status
+from sqlalchemy.exc import IntegrityError
 
 from backend.app.core.auth import require_api_key
 from backend.app.schemas import (
@@ -191,6 +192,8 @@ def create_task(
         raise HTTPException(status_code=503, detail="Database unavailable")
 
     category = _category_target(history_store, task.suite_id or task.category_id)
+    if history_store.get_task(task.id):
+        raise HTTPException(status_code=409, detail=f"Task '{task.id}' already exists; use PUT to update it")
     suite_id = category["id"]
     payload = task.model_dump()
     cat_id = task.category_id or category.get("domain") or normalize_category_id(suite_id) or suite_id
@@ -200,7 +203,10 @@ def create_task(
         "domain": category["domain"],
         "category_id": cat_id,
     })
-    created = history_store.upsert_task(payload)
+    try:
+        created = history_store.upsert_task(payload, create_only=True)
+    except (ValueError, IntegrityError) as exc:
+        raise HTTPException(status_code=409, detail=f"Task '{task.id}' already exists; use PUT to update it") from exc
     return created
 
 
@@ -257,6 +263,9 @@ async def upload_tasks(
     suite_id = category["id"]
     tasks_dicts = []
     for task in parsed.tasks:
+        existing_task = history_store.get_task(task.id)
+        if existing_task and existing_task.get("suite_id") != suite_id:
+            raise HTTPException(status_code=409, detail=f"Task '{task.id}' already belongs to another category")
         payload = task.model_dump()
         cat_id = (
             task.category_id
@@ -375,10 +384,15 @@ def create_scorecard_criteria(
         raise HTTPException(status_code=422, detail="SLA policy name is required")
     if history_store.scorecard_criteria_name_exists(name):
         raise HTTPException(status_code=409, detail=f"An SLA policy named '{name}' already exists")
+    if history_store.get_scorecard_criteria(criteria.id):
+        raise HTTPException(status_code=409, detail=f"SLA policy '{criteria.id}' already exists; use PUT to update it")
     data = criteria.model_dump()
     data["name"] = name
     data["is_locked"] = False
-    created = history_store.upsert_scorecard_criteria(data)
+    try:
+        created = history_store.upsert_scorecard_criteria(data)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return created
 
 
@@ -407,7 +421,10 @@ def update_scorecard_criteria(
     if update.name is not None:
         data["name"] = update.name.strip()
     data["id"] = criteria_id
-    updated = history_store.upsert_scorecard_criteria(data)
+    try:
+        updated = history_store.upsert_scorecard_criteria(data)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return updated
 
 
@@ -571,10 +588,10 @@ async def upload_benchmark_suite(
         is_csv = "text/csv" in (request.headers.get("content-type") or "").lower()
 
     parsed = parse_global_task_suite(_csv_suite_payload(raw_content) if is_csv else raw_content)
-    if not parsed.tasks:
+    if not parsed.is_valid:
         return {
             "success": False,
-            "error": "No valid tasks found in upload",
+            "error": "Task suite validation failed; no tasks were imported",
             "diagnostics": [d.model_dump() for d in parsed.errors],
         }
 
@@ -601,6 +618,9 @@ async def upload_benchmark_suite(
 
     tasks_dict = []
     for t in parsed.tasks:
+        existing_task = history_store.get_task(t.id)
+        if existing_task and existing_task.get("suite_id") != suite_id:
+            raise HTTPException(status_code=409, detail=f"Task '{t.id}' already belongs to another category")
         td = t.model_dump()
         td["suite_id"] = suite_id
         td["suite_name"] = suite_name

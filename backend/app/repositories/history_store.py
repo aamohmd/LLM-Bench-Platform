@@ -76,7 +76,7 @@ class PipelineConfigRecord(Base):
     engine: Mapped[str] = mapped_column(String(50), nullable=False)
     model: Mapped[str] = mapped_column(String(200), nullable=False)
     quantization: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    max_context_len: Mapped[int] = mapped_column(Integer, nullable=False)
+    max_context_len: Mapped[int | None] = mapped_column(Integer, nullable=True)
     gpu_memory_utilization: Mapped[float | None] = mapped_column(Float, nullable=True)
     retrieval_k: Mapped[int | None] = mapped_column(Integer, nullable=True)
     reranker_model: Mapped[str | None] = mapped_column(String(200), nullable=True)
@@ -511,18 +511,10 @@ class BenchmarkHistoryRepository:
         return record
 
     def get_api_key(self, key_hash: str) -> ApiKeyRecord | None:
-        with self._auth_lock:
-            cached = self._api_key_cache.get(key_hash)
-            if cached is not None:
-                return cached
-            with self._session_factory() as session:
-                record = session.scalar(select(ApiKeyRecord).where(ApiKeyRecord.key_hash == key_hash))
-            if record is not None:
-                # FIFO eviction: keep cache bounded to _API_KEY_CACHE_MAX_SIZE
-                if len(self._api_key_cache) >= self._API_KEY_CACHE_MAX_SIZE:
-                    self._api_key_cache.pop(next(iter(self._api_key_cache)))
-                self._api_key_cache[key_hash] = record
-        return record
+        # SECURITY: revocations from other workers or operator tools must take
+        # effect on the next request, rather than waiting for a process restart.
+        with self._session_factory() as session:
+            return session.scalar(select(ApiKeyRecord).where(ApiKeyRecord.key_hash == key_hash))
 
     def revoke_api_key(self, key_hash: str) -> bool:
         with self._session_factory.begin() as session:
@@ -1064,13 +1056,18 @@ class BenchmarkHistoryRepository:
                         if isinstance(summary.get("engine_config"), dict)
                         else {}
                     )
-                    ctx_len = int(summary.get("context_len") if str(summary.get("context_len")).isdigit() else 8192)
+                    context_value = (engine_parameters.get("startup_max_model_len")
+                                     or summary.get("context_len")
+                                     or engine_parameters.get("context_length_requested"))
+                    ctx_len = int(context_value) if str(context_value).isdigit() and int(context_value) > 0 else None
+                    memory_fraction = engine_parameters.get("startup_gpu_memory_utilization")
+                    memory_fraction = float(memory_fraction) if memory_fraction is not None else None
                     identity_dict = {
                         "engine": engine_str,
                         "model": model_str,
                         "quantization": quant_str,
                         "max_context_len": ctx_len,
-                        "gpu_memory_utilization": 0.90 if engine_str == "vllm" else None,
+                        "gpu_memory_utilization": memory_fraction,
                         "retrieval_k": engine_parameters.get("rag_top_k"),
                         "reranker_model": None,
                         "agent_topology": "direct",
@@ -1086,7 +1083,7 @@ class BenchmarkHistoryRepository:
                         model=model_str,
                         quantization=quant_str,
                         max_context_len=ctx_len,
-                        gpu_memory_utilization=0.90 if engine_str == "vllm" else None,
+                        gpu_memory_utilization=memory_fraction,
                         retrieval_k=(
                             int(engine_parameters["rag_top_k"])
                             if str(engine_parameters.get("rag_top_k", "")).isdigit()
@@ -2253,9 +2250,11 @@ class BenchmarkHistoryRepository:
             record = session.scalar(select(TaskRecord).where(TaskRecord.id == task_id))
             return self._task_record_to_dict(record) if record else None
 
-    def upsert_task(self, task: dict) -> dict:
+    def upsert_task(self, task: dict, *, create_only: bool = False) -> dict:
         with self._session_factory.begin() as session:
             record = session.scalar(select(TaskRecord).where(TaskRecord.id == task["id"]))
+            if record and create_only:
+                raise ValueError(f"Task '{task['id']}' already exists; use PUT to update it")
             tolerance_str = json.dumps(task["tolerance"]) if task.get("tolerance") else None
             scoring_str = json.dumps(task["scoring_config"]) if task.get("scoring_config") else None
             expected_str = json.dumps(task["expected_answer"]) if isinstance(task["expected_answer"], (dict, list)) else str(task["expected_answer"])
@@ -2761,6 +2760,10 @@ class BenchmarkHistoryRepository:
             record = session.scalar(
                 select(ScorecardCriteriaRecord).where(ScorecardCriteriaRecord.id == cid)
             )
+            weights = [data.get(key) if data.get(key) is not None else getattr(record, key, default)
+                       for key, default in (("weight_quality", 0.60), ("weight_speed", 0.25), ("weight_fit", 0.15))]
+            if sum(weights) <= 0:
+                raise ValueError("At least one score weight must be greater than zero")
 
             # If setting as default, clear other defaults
             if data.get("is_default"):

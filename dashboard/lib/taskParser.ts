@@ -277,7 +277,8 @@ export function parseGlobalTaskSuite(jsonTextOrObj: string | Record<string, any>
 
     if (taskType === "numeric_tolerance" || taskType === "numeric_exact") {
       const num = Number(expectedAnswer);
-      if (Number.isNaN(num) || !Number.isFinite(num)) {
+      if (!["number", "string"].includes(typeof expectedAnswer)
+        || (typeof expectedAnswer === "string" && !expectedAnswer.trim()) || !Number.isFinite(num)) {
         errors.push({
           task_index: idx,
           task_id: id,

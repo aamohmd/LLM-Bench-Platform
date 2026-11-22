@@ -81,7 +81,7 @@ function getMetrics(row: ScorecardExportRow): { metrics: Metric[]; memory: numbe
   const medianTtft = finite(run.median_ttft_s);
   const p95Ttft = finite(run.p95_ttft_s);
   const quality = finite(row.deploymentMeanAccuracy ?? run.quality_score);
-  const kvCache = finite(run.peak_kv_cache_pct == null ? null : run.peak_kv_cache_pct <= 1 ? run.peak_kv_cache_pct * 100 : run.peak_kv_cache_pct);
+  const kvCache = finite(run.peak_kv_cache_pct);
   const used = finite(run.peak_gpu_mem_mb ?? run.median_model_memory_mb);
   const gpuTotal = finite(run.hw_gpu_memory_mb);
   const total = gpuTotal ?? finite(run.hw_ram_gb == null ? null : run.hw_ram_gb * 1024);
@@ -95,7 +95,7 @@ function getMetrics(row: ScorecardExportRow): { metrics: Metric[]; memory: numbe
       { value: medianTtft, label: "Median TTFT", display: displayTime(medianTtft) },
       { value: p95Ttft, label: "p95 TTFT", display: displayTime(p95Ttft) },
       { value: quality, label: "Quality", display: pct(quality) },
-      { value: memory, label: memoryLabel, display: pct(memory) },
+      { value: memory, label: memoryLabel, display: memory == null ? "N/A" : `${memory.toFixed(1)}%` },
       { value: error, label: "Error rate", display: pct(error) },
     ],
     memory, memoryLabel,

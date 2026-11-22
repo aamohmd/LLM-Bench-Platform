@@ -19,10 +19,10 @@ async function proxy(
     }
     const apiKey =
       request.cookies.get("admin_api_key")?.value ||
-      request.headers.get("x-api-key") ||
-      process.env.ADMIN_API_KEY ||
-      process.env.BENCHMARK_API_KEY;
-    if (apiKey) headers.set("X-API-Key", apiKey);
+      request.headers.get("x-api-key");
+    // SECURITY: anonymous callers must never inherit a deployment credential.
+    if (!apiKey) return NextResponse.json({ detail: "API Key is missing" }, { status: 401 });
+    headers.set("X-API-Key", apiKey);
 
     const canHaveBody = !["GET", "HEAD"].includes(request.method);
     const body = canHaveBody ? await request.arrayBuffer() : undefined;
