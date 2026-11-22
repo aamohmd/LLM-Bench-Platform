@@ -1,6 +1,6 @@
 import type { BenchmarkRun } from "../../lib/benchmarks";
 import { engineLabel, hardwareLabel, errorRate } from "../../lib/benchmarks";
-import type { ModelScorecard } from "../../lib/scorecard";
+import { UNIVERSAL_STANDARDS, type ModelScorecard, type ScorecardCriteria } from "../../lib/scorecard";
 import type { ApprovalEvaluation } from "../../lib/benchmarks";
 
 export interface ScorecardExportRow {
@@ -16,11 +16,14 @@ export interface ScorecardExportRow {
 
 export function exportScorecardCsv(
   allRows: ScorecardExportRow[],
-  selectedConcurrency: number
+  selectedConcurrency: number,
+  criteria?: ScorecardCriteria | null,
 ): void {
   const escapeCsv = (val: unknown): string => {
     if (val === null || val === undefined) return '""';
-    const str = String(val).replace(/"/g, '""');
+    let str = String(val);
+    if (/^[=+\-@\t\r\n]/.test(str)) str = "'" + str;
+    str = str.replace(/"/g, '""');
     return `"${str}"`;
   };
 
@@ -68,21 +71,23 @@ export function exportScorecardCsv(
       return found && found.score != null ? `${(found.score * 100).toFixed(1)}%` : "N/A";
     };
 
-    const tpsVal = d.hasDataForConcurrency ? (d.run.median_decode_tps || d.run.aggregate_output_tps || 0) : null;
+    const tpsVal = d.hasDataForConcurrency ? (d.run.median_decode_tps ?? d.run.aggregate_output_tps ?? null) : null;
     const ttftVal = d.hasDataForConcurrency ? (d.run.median_ttft_s ?? null) : null;
-    const p95Val = d.hasDataForConcurrency ? (d.run.p95_ttft_s ?? d.run.median_ttft_s ?? null) : null;
+    const p95Val = d.hasDataForConcurrency ? (d.run.p95_ttft_s ?? null) : null;
     const qualityVal = d.hasDataForConcurrency ? d.deploymentMeanAccuracy : null;
-    const kvVal = d.hasDataForConcurrency && d.run.peak_kv_cache_pct != null
-      ? (d.run.peak_kv_cache_pct <= 1.0 ? d.run.peak_kv_cache_pct * 100 : d.run.peak_kv_cache_pct)
-      : null;
+    const used = d.run.peak_gpu_mem_mb ?? null;
+    const total = d.run.hw_gpu_memory_mb ?? (d.run.hw_ram_gb != null ? d.run.hw_ram_gb * 1024 : null);
+    const vramPct = used != null && total != null && total > 0 ? used / total * 100 : null;
+    const kvVal = d.hasDataForConcurrency
+      ? (d.run.framework === "vllm" ? d.run.peak_kv_cache_pct ?? vramPct : vramPct) : null;
     const errVal = d.hasDataForConcurrency && d.run ? errorRate(d.run) : null;
 
-    const g1Pass = tpsVal != null ? (tpsVal >= 25.0 ? "PASS" : "FAIL") : "UNTESTED";
-    const g2Pass = ttftVal != null ? (ttftVal <= 0.8 ? "PASS" : "FAIL") : "UNTESTED";
-    const g3Pass = p95Val != null ? (p95Val <= 1.5 ? "PASS" : "FAIL") : "UNTESTED";
-    const g4Pass = qualityVal != null ? (qualityVal >= 0.75 ? "PASS" : "FAIL") : "UNTESTED";
-    const g5Pass = kvVal != null ? (kvVal <= 85.0 ? "PASS" : "FAIL") : "PASS";
-    const precondPass = errVal != null ? (errVal <= 0.01 ? "PASS" : "FAIL") : "UNTESTED";
+    const g1Pass = tpsVal != null ? (tpsVal >= (criteria?.min_decode_tps ?? UNIVERSAL_STANDARDS.minTargetDecodeTps) ? "PASS" : "FAIL") : "UNTESTED";
+    const g2Pass = ttftVal != null ? (ttftVal <= (criteria?.fast_ttft_s ?? UNIVERSAL_STANDARDS.fastTtftSeconds) ? "PASS" : "FAIL") : "UNTESTED";
+    const g3Pass = p95Val != null ? (p95Val <= (criteria?.tail_ttft_ceiling_s ?? UNIVERSAL_STANDARDS.tailTtftCeilingSeconds) ? "PASS" : "FAIL") : "UNTESTED";
+    const g4Pass = qualityVal != null ? (qualityVal >= (criteria?.min_quality_score ?? UNIVERSAL_STANDARDS.strictQualityMin) ? "PASS" : "FAIL") : "UNTESTED";
+    const g5Pass = d.run.framework === "openai-compatible" ? "N/A" : kvVal != null ? (kvVal <= (criteria?.memory_stability_max_pct ?? UNIVERSAL_STANDARDS.memoryStabilityMaxPct) ? "PASS" : "FAIL") : "UNTESTED";
+    const precondPass = errVal != null ? (errVal <= (criteria?.max_error_rate ?? UNIVERSAL_STANDARDS.maxAllowedErrorRate) ? "PASS" : "FAIL") : "UNTESTED";
 
     return [
       escapeCsv(d.run.model),
@@ -111,7 +116,7 @@ export function exportScorecardCsv(
     ].join(",");
   });
 
-  const csvContent = [headers.join(","), ...rows].join("\r\n");
+  const csvContent = [headers.map(escapeCsv).join(","), ...rows].join("\r\n");
   const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");

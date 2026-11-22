@@ -396,7 +396,7 @@ export function TaskSuiteManager({ onNotify }: { onNotify: (msg: string) => void
   };
 
   const submitSuiteUpload = async () => {
-    if (!parsedSuite || !rawFileText) return;
+    if (!parsedSuite?.is_valid || !rawFileText) return;
     setUploading(true);
     try {
       let payloadObj: any;
@@ -676,7 +676,6 @@ export function TaskSuiteManager({ onNotify }: { onNotify: (msg: string) => void
                   <div className="suite-manager__category-actions">
                     <button type="button" onClick={() => void openCategoryEditor(s)} className="settings-btn-secondary"><Plus size={15} aria-hidden="true" /> Add category</button>
                     <button type="button" onClick={() => openUpload(s.id)} className="settings-btn-secondary"><UploadCloud size={15} aria-hidden="true" /> Import category</button>
-                    <button type="button" className="settings-btn-secondary suite-manager__document-pending" disabled>Generate from documents</button>
                   </div>
                 </div>
                 {(s.task_groups?.length ?? 0) > 0 ? (
@@ -1374,7 +1373,7 @@ export function TaskSuiteManager({ onNotify }: { onNotify: (msg: string) => void
 
               <button
                 onClick={() => void submitSuiteUpload()}
-                disabled={!parsedSuite || uploading || parsedSuite.valid_count === 0 || !customSuiteId.trim() || !uploadParentSuiteId}
+                disabled={!parsedSuite?.is_valid || uploading || !customSuiteId.trim() || !uploadParentSuiteId}
                 style={{
                   display: "flex",
                   alignItems: "center",

@@ -251,29 +251,39 @@ def export_benchmarks_csv(
     ]
     writer.writerow(headers)
 
+    policies = {}
+    if history_store:
+        for suite in history_store.list_benchmark_suites():
+            policy = suite.get("sla_criteria") or {}
+            policies[suite["id"]] = policy
+            for category in suite.get("task_groups", []):
+                policies[category["id"]] = policy
+
+    def safe_csv_cell(value):
+        if isinstance(value, str) and value.startswith(("=", "+", "-", "@", "\t", "\r", "\n")):
+            return "'" + value
+        return value
+
     for r in runs:
-        tps = r.median_decode_tps or 0.0
-        ttft = r.median_ttft_s if r.median_ttft_s is not None else 999.0
-        p95 = r.p95_ttft_s if r.p95_ttft_s is not None else 999.0
-        q = r.quality_score if r.quality_score is not None else (r.quality_success_rate or 0.0)
+        policy = policies.get(r.scoreboard_suite_id or r.suite_id, {})
+        tps = r.median_decode_tps if r.median_decode_tps is not None else r.aggregate_output_tps
+        quality = r.quality_score
+        total_memory = r.hw_gpu_memory_mb or (r.hw_ram_gb * 1024 if r.hw_ram_gb else None)
+        memory_pct = r.peak_gpu_mem_mb / total_memory * 100 if r.peak_gpu_mem_mb is not None and total_memory else None
+        if r.framework == "vllm" and r.peak_kv_cache_pct is not None:
+            memory_pct = r.peak_kv_cache_pct
+        g1 = tps >= policy.get("min_decode_tps", 25.0) if tps is not None else ""
+        g2 = r.median_ttft_s <= policy.get("fast_ttft_s", 0.8) if r.median_ttft_s is not None else ""
+        g3 = r.p95_ttft_s <= policy.get("tail_ttft_ceiling_s", 1.5) if r.p95_ttft_s is not None else ""
+        g4 = quality >= policy.get("min_quality_score", 0.75) if quality is not None else ""
+        g5 = memory_pct <= policy.get("memory_stability_max_pct", 85.0) if memory_pct is not None else ""
+        if r.framework == "openai-compatible":
+            g5 = "N/A"
+        request_count = r.quality_total_count
+        err_rate = r.error_count / request_count if request_count else None
+        precond = err_rate <= policy.get("max_error_rate", 0.01) if err_rate is not None else ""
 
-        mem_pass = True
-        if r.peak_kv_cache_pct is not None and r.peak_kv_cache_pct > 85.0:
-            mem_pass = False
-        if r.peak_gpu_mem_mb is not None and r.hw_gpu_memory_mb:
-            if (r.peak_gpu_mem_mb / r.hw_gpu_memory_mb) > 0.85:
-                mem_pass = False
-
-        g1 = tps >= 25.0
-        g2 = ttft <= 0.800
-        g3 = p95 <= 1.500
-        g4 = q >= 0.75
-        g5 = mem_pass
-        request_count = r.quality_total_count or r.num_runs or 1
-        err_rate = (r.error_count or 0) / request_count
-        precond = err_rate <= 0.01
-
-        writer.writerow([
+        writer.writerow([safe_csv_cell(value) for value in [
             r.id or "",
             r.timestamp.isoformat() if r.timestamp else "",
             r.model,
@@ -303,7 +313,7 @@ def export_benchmarks_csv(
             g4,
             g5,
             precond,
-        ])
+        ]])
 
     csv_data = output.getvalue()
     filename = f"benchmark_audit_export_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.csv"

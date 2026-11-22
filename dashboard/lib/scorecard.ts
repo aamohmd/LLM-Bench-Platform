@@ -189,7 +189,7 @@ export function evaluateModelScorecard(
     ? (measuredMemoryMb / totalMemoryMb) * 100
     : null;
   const kvCachePct = run.peak_kv_cache_pct != null
-    ? (run.peak_kv_cache_pct <= 1.0 ? run.peak_kv_cache_pct * 100 : run.peak_kv_cache_pct)
+    ? run.peak_kv_cache_pct
     : null;
 
   const isVllm = run.framework === "vllm";
@@ -250,11 +250,11 @@ export function evaluateModelScorecard(
 
     const fitWeight = fitComp !== null ? weights.fit : 0.0;
     const presentWeightSum = weights.quality + weights.speed + fitWeight;
-    const calculated = (
+    const calculated = presentWeightSum > 0 ? (
       qualityComp * (weights.quality / presentWeightSum) +
       speedComp * (weights.speed / presentWeightSum) +
       (fitComp !== null ? fitComp * (fitWeight / presentWeightSum) : 0)
-    ) * 100 * overloadMultiplier * missingEvidenceMultiplier;
+    ) * 100 * overloadMultiplier * missingEvidenceMultiplier : 0;
 
     score = Math.max(1, Math.min(100, Math.round(calculated)));
   }

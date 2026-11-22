@@ -15,7 +15,8 @@ export async function loginAction(prevState: any, formData: FormData) {
   try {
     const res = await fetch(`${apiBase}/api/v1/auth/session`, {
       headers: { "X-API-Key": apiKey },
-      cache: "no-store"
+      cache: "no-store",
+      signal: AbortSignal.timeout(10_000),
     });
     
     if (!res.ok) {

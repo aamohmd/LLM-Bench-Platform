@@ -47,7 +47,7 @@ class PipelineConfigResponse(BaseModel):
     engine: str
     model: str
     quantization: str | None = None
-    max_context_len: int
+    max_context_len: int | None = None
     gpu_memory_utilization: float | None = None
     retrieval_k: int | None = None
     reranker_model: str | None = None
@@ -166,7 +166,7 @@ class ParetoPointResponse(BaseModel):
 
 
 class BenchmarkRun(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="ignore", allow_inf_nan=False)
 
     id: str | None = None
     timestamp: datetime | None = None
@@ -258,6 +258,7 @@ class BenchmarkRun(BaseModel):
 
 
 class BenchmarkSampleSubmission(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False)
     ts: float = Field(ge=0)
     gpu_mem_mb: float | None = Field(default=None, ge=0)
     kv_cache_pct: float | None = Field(default=None, ge=0, le=100)
@@ -472,16 +473,16 @@ class TaskSchema(BaseModel):
 
 
 class TaskCreate(BaseModel):
-    id: str
-    suite_id: str | None = None
-    suite_name: str | None = None
-    domain: str | None = "general"
-    category_id: str
-    prompt: str
+    id: str = Field(min_length=1, max_length=200, pattern=r"\S")
+    suite_id: str | None = Field(default=None, max_length=100)
+    suite_name: str | None = Field(default=None, max_length=200)
+    domain: str | None = Field(default="general", max_length=100)
+    category_id: str = Field(min_length=1, max_length=100, pattern=r"\S")
+    prompt: str = Field(min_length=1, pattern=r"\S")
     expected_answer: Any
     task_type: str
-    bucket: str = "general"
-    language: str = "en"
+    bucket: str = Field(default="general", max_length=50)
+    language: str = Field(default="en", max_length=10)
     tolerance: dict[str, Any] | None = None
     scoring_config: dict[str, Any] | None = None
     program: str | None = None
@@ -520,11 +521,11 @@ class BenchmarkSuiteSchema(BaseModel):
 
 
 class BenchmarkSuiteCreate(BaseModel):
-    id: str | None = None
-    parent_suite_id: str | None = None
+    id: str | None = Field(default=None, min_length=1, max_length=100, pattern=r"\S")
+    parent_suite_id: str | None = Field(default=None, min_length=1, max_length=100, pattern=r"\S")
     sla_criteria_id: str | None = None
-    name: str
-    domain: str = "general"
+    name: str = Field(min_length=1, max_length=200, pattern=r"\S")
+    domain: str = Field(default="general", min_length=1, max_length=100, pattern=r"\S")
     description: str | None = None
     default_scorer: str | None = None
     default_tolerance: dict[str, Any] | None = None
@@ -577,17 +578,17 @@ class ScorecardCriteriaCreate(BaseModel):
     scoreboard_suite_id: str | None = None
     name: str
     description: str | None = None
-    min_decode_tps: float = 25.0
-    fast_ttft_s: float = 0.8
-    tail_ttft_ceiling_s: float = 1.5
-    interactive_ttft_max_s: float = 3.0
-    min_quality_score: float = 0.75
-    quality_surplus_tradeoff: float = 1.10
-    memory_stability_max_pct: float = 85.0
-    max_error_rate: float = 0.01
-    weight_quality: float = 0.60
-    weight_speed: float = 0.25
-    weight_fit: float = 0.15
+    min_decode_tps: float = Field(default=25.0, ge=0, allow_inf_nan=False)
+    fast_ttft_s: float = Field(default=0.8, ge=0, allow_inf_nan=False)
+    tail_ttft_ceiling_s: float = Field(default=1.5, ge=0, allow_inf_nan=False)
+    interactive_ttft_max_s: float = Field(default=3.0, ge=0, allow_inf_nan=False)
+    min_quality_score: float = Field(default=0.75, ge=0, le=1, allow_inf_nan=False)
+    quality_surplus_tradeoff: float = Field(default=1.10, ge=0, allow_inf_nan=False)
+    memory_stability_max_pct: float = Field(default=85.0, ge=0, le=100, allow_inf_nan=False)
+    max_error_rate: float = Field(default=0.01, ge=0, le=1, allow_inf_nan=False)
+    weight_quality: float = Field(default=0.60, ge=0, allow_inf_nan=False)
+    weight_speed: float = Field(default=0.25, ge=0, allow_inf_nan=False)
+    weight_fit: float = Field(default=0.15, ge=0, allow_inf_nan=False)
     is_default: bool = False
 
 
@@ -596,17 +597,17 @@ class ScorecardCriteriaUpdate(BaseModel):
     scoreboard_suite_id: str | None = None
     name: str | None = None
     description: str | None = None
-    min_decode_tps: float | None = None
-    fast_ttft_s: float | None = None
-    tail_ttft_ceiling_s: float | None = None
-    interactive_ttft_max_s: float | None = None
-    min_quality_score: float | None = None
-    quality_surplus_tradeoff: float | None = None
-    memory_stability_max_pct: float | None = None
-    max_error_rate: float | None = None
-    weight_quality: float | None = None
-    weight_speed: float | None = None
-    weight_fit: float | None = None
+    min_decode_tps: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    fast_ttft_s: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    tail_ttft_ceiling_s: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    interactive_ttft_max_s: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    min_quality_score: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
+    quality_surplus_tradeoff: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    memory_stability_max_pct: float | None = Field(default=None, ge=0, le=100, allow_inf_nan=False)
+    max_error_rate: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
+    weight_quality: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    weight_speed: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    weight_fit: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     is_default: bool | None = None
 
 

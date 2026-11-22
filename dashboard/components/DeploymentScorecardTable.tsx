@@ -719,7 +719,7 @@ export function DeploymentScorecardTable({
 
   const handleExportCsv = () => {
     setExportMessage(null);
-    exportScorecardCsv(rankedDeployments.primaryRows.flatMap((group) => [group.best, ...group.alternatives]), selectedConcurrency);
+    exportScorecardCsv(rankedDeployments.primaryRows.flatMap((group) => [group.best, ...group.alternatives]), selectedConcurrency, activeCriteria);
   };
 
   const handleExportPdf = async () => {

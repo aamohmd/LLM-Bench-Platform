@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import math
 from typing import Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from benchmark_scoring import catalog, validate_task
 
 
@@ -45,16 +45,16 @@ class CategoryMetadata(BaseModel):
 
 
 class TaskItem(BaseModel):
-    id: str
-    suite_id: str | None = None
-    suite_name: str | None = None
-    domain: str | None = "general"
-    category_id: str
-    prompt: str
+    id: str = Field(min_length=1, max_length=200, pattern=r"\S")
+    suite_id: str | None = Field(default=None, max_length=100)
+    suite_name: str | None = Field(default=None, max_length=200)
+    domain: str | None = Field(default="general", max_length=100)
+    category_id: str = Field(min_length=1, max_length=100)
+    prompt: str = Field(min_length=1, pattern=r"\S")
     expected_answer: Any
     task_type: str
-    bucket: str = "general"
-    language: str = "en"
+    bucket: str = Field(default="general", max_length=50)
+    language: str = Field(default="en", max_length=10)
     tolerance: dict[str, Any] | None = None
     scoring_config: dict[str, Any] | None = None
     program: str | None = None
@@ -106,6 +106,12 @@ def parse_global_task_suite(raw_input: dict[str, Any] | str) -> TaskSuiteParseRe
             errors=[TaskParseDiagnostic(task_index=-1, field="root", error="Input must be a JSON object")],
         )
 
+    if not isinstance(data, dict):
+        return TaskSuiteParseResult(
+            is_valid=False,
+            errors=[TaskParseDiagnostic(task_index=-1, field="root", error="Input must be a JSON object")],
+        )
+
     # 1. Resolve Category Metadata
     raw_meta = data.get("category_metadata")
     if not isinstance(raw_meta, dict):
@@ -142,24 +148,30 @@ def parse_global_task_suite(raw_input: dict[str, Any] | str) -> TaskSuiteParseRe
     suite_name = str(raw_suite_name or suite_id.replace("_", " ").title()).strip()
     domain = str(raw_domain or norm_cat_id).strip().lower()
 
-    category_metadata = CategoryMetadata(
-        category_id=norm_cat_id,
-        suite_id=suite_id,
-        parent_suite_id=raw_meta.get("parent_suite_id") or data.get("parent_suite_id"),
-        suite_name=suite_name,
-        domain=domain,
-        display_name=suite_name,
-        description=raw_meta.get("description"),
-        language=raw_meta.get("language", "en"),
-        default_task_type=raw_meta.get("default_task_type") or "grounded_answer",
-        default_tolerance=raw_meta.get("default_tolerance") or raw_meta.get("tolerance") or {"relative": 0.001, "absolute_floor": 0.005},
-        system_prompt=raw_meta.get("system_prompt"),
-        attribution=raw_meta.get("attribution"),
-        source_dataset=raw_meta.get("source_dataset"),
-        license=raw_meta.get("license"),
-        status=raw_meta.get("status", "approval_ready"),
-        is_required=raw_meta.get("is_required", data.get("is_required")),
-    )
+    try:
+        category_metadata = CategoryMetadata(
+            category_id=norm_cat_id,
+            suite_id=suite_id,
+            parent_suite_id=raw_meta.get("parent_suite_id") or data.get("parent_suite_id"),
+            suite_name=suite_name,
+            domain=domain,
+            display_name=suite_name,
+            description=raw_meta.get("description"),
+            language=raw_meta.get("language", "en"),
+            default_task_type=raw_meta.get("default_task_type") or "grounded_answer",
+            default_tolerance=raw_meta.get("default_tolerance") or raw_meta.get("tolerance") or {"relative": 0.001, "absolute_floor": 0.005},
+            system_prompt=raw_meta.get("system_prompt"),
+            attribution=raw_meta.get("attribution"),
+            source_dataset=raw_meta.get("source_dataset"),
+            license=raw_meta.get("license"),
+            status=raw_meta.get("status", "approval_ready"),
+            is_required=raw_meta.get("is_required", data.get("is_required")),
+        )
+    except ValidationError as exc:
+        return TaskSuiteParseResult(
+            is_valid=False,
+            errors=[TaskParseDiagnostic(task_index=-1, field="category_metadata", error=str(exc))],
+        )
 
     # 2. Extract Tasks / Content
     raw_tasks = data.get("content")
@@ -186,7 +198,7 @@ def parse_global_task_suite(raw_input: dict[str, Any] | str) -> TaskSuiteParseRe
 
         # ID
         task_id = item.get("id")
-        if not task_id or not isinstance(task_id, str):
+        if not isinstance(task_id, str) or not task_id.strip():
             errors.append(TaskParseDiagnostic(task_index=idx, field="id", error="Missing or non-string 'id'"))
             continue
         task_id = task_id.strip()
@@ -203,7 +215,7 @@ def parse_global_task_suite(raw_input: dict[str, Any] | str) -> TaskSuiteParseRe
 
         # Task Type
         raw_task_type = item.get("task_type") or category_metadata.default_task_type
-        if raw_task_type not in VALID_TASK_TYPES:
+        if not isinstance(raw_task_type, str) or raw_task_type not in VALID_TASK_TYPES:
             errors.append(TaskParseDiagnostic(
                 task_index=idx,
                 task_id=task_id,
@@ -262,7 +274,7 @@ def parse_global_task_suite(raw_input: dict[str, Any] | str) -> TaskSuiteParseRe
             tolerance = category_metadata.default_tolerance
 
         # Bucket
-        bucket = item.get("bucket") or "general"
+        bucket = item.get("bucket", "general")
 
         # Preserve scorer parameters without maintaining a second parameter list.
         scoring_config = item.get("scoring_config")
@@ -280,23 +292,26 @@ def parse_global_task_suite(raw_input: dict[str, Any] | str) -> TaskSuiteParseRe
             errors.append(TaskParseDiagnostic(task_index=idx, task_id=task_id, field="scoring_config", error=str(exc)))
             continue
 
-        validated_tasks.append(
-            TaskItem(
-                id=task_id,
-                suite_id=item.get("suite_id") or suite_id,
-                suite_name=item.get("suite_name") or suite_name,
-                domain=item.get("domain") or domain,
-                category_id=task_cat,
-                prompt=prompt,
-                expected_answer=expected_answer,
-                task_type=raw_task_type,
-                bucket=bucket,
-                language=task_lang,
-                tolerance=tolerance,
-                scoring_config=scoring_config,
-                program=item.get("program"),
+        try:
+            validated_tasks.append(
+                TaskItem(
+                    id=task_id,
+                    suite_id=item.get("suite_id") or suite_id,
+                    suite_name=item.get("suite_name") or suite_name,
+                    domain=item.get("domain") or domain,
+                    category_id=task_cat,
+                    prompt=prompt,
+                    expected_answer=expected_answer,
+                    task_type=raw_task_type,
+                    bucket=bucket,
+                    language=task_lang,
+                    tolerance=tolerance,
+                    scoring_config=scoring_config,
+                    program=item.get("program"),
+                )
             )
-        )
+        except ValidationError as exc:
+            errors.append(TaskParseDiagnostic(task_index=idx, task_id=task_id, field="item", error=str(exc)))
 
     is_valid = len(errors) == 0 and len(validated_tasks) > 0
 
